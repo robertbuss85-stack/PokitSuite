@@ -10,7 +10,7 @@ PokitSuite is a native Windows measurement application for Pokit Pro Bluetooth i
 
 [Website](https://robertbuss85-stack.github.io/PokitSuite/) · [Download](https://github.com/robertbuss85-stack/PokitSuite/releases/latest) · [German documentation](docs/README.de.md) · [MCP guide](docs/MCP.md)
 
-![PokitSuite oscilloscope connected to real hardware](docs/assets/pokitsuite-scope.png)
+![PokitSuite oscilloscope connected to real Pokit Pro hardware](docs/assets/pokitScreenshot.JPG)
 
 ## Current status
 
