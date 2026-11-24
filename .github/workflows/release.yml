@@ -15,13 +15,14 @@ jobs:
           arch: win64_msvc2022_64
           modules: qtconnectivity
           cache: true
-      - run: cmake -S native -B native/build -G "Visual Studio 17 2022" -A x64
-      - run: cmake --build native/build --config Release --parallel
+      - uses: ilammy/msvc-dev-cmd@v1
+      - run: cmake -S native -B native/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build native/build --parallel
       - name: Assemble portable package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/PokitSuite | Out-Null
-          Copy-Item native/build/Release/PokitSuiteNative.exe,native/build/Release/QtPokit.dll dist/PokitSuite/
+          Copy-Item native/build/PokitSuiteNative.exe,native/build/QtPokit.dll dist/PokitSuite/
           Copy-Item LICENSE,THIRD_PARTY_NOTICES.md,README.md dist/PokitSuite/
           & windeployqt --release --qmldir native/qml dist/PokitSuite/PokitSuiteNative.exe
           Compress-Archive -Path dist/PokitSuite -DestinationPath PokitSuite-Windows-x64.zip
