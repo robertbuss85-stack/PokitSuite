@@ -2,6 +2,15 @@
 
 All notable public changes are documented here. The project follows semantic versioning from its first public release.
 
+## [0.2.0] - 2026-11-24
+
+### Added
+
+- Scope capture library with selectable saved reference curves
+- PDF measurement reports containing a scope plot and derived-value table
+- CSV sample tables and JSON waveform archives for every saved capture
+- Cyan reference overlay for direct comparison with the live CH1 waveform
+
 ## [0.1.0] - 2026-11-24
 
 ### Added

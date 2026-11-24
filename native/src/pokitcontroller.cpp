@@ -8,14 +8,26 @@
 #include <QBluetoothDeviceInfo>
 #include <QDebug>
 #include <QCoreApplication>
+#include <QDesktopServices>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QFont>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocale>
 #include <QLowEnergyController>
+#include <QPageSize>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPdfWriter>
+#include <QPen>
 #include <QSaveFile>
+#include <QStandardPaths>
+#include <QTextStream>
+#include <QUrl>
 #include <algorithm>
 #include <cmath>
 
@@ -71,6 +83,7 @@ PokitController::PokitController(QObject *parent) : QObject(parent)
             this, &PokitController::processAutomationCommands);
     m_automationTimer.start();
     publishAutomationState();
+    refreshSavedCaptures();
     QTimer::singleShot(500, this, &PokitController::connectDevice);
 }
 
@@ -85,6 +98,13 @@ QVariantList PokitController::scopeSamples() const
 {
     QVariantList list; list.reserve(m_scopeValues.size());
     for (double value : m_scopeValues) list.append(value);
+    return list;
+}
+
+QVariantList PokitController::referenceSamples() const
+{
+    QVariantList list; list.reserve(m_referenceValues.size());
+    for (double value : m_referenceValues) list.append(value);
     return list;
 }
 
@@ -280,6 +300,252 @@ void PokitController::updateScopeMetrics()
     emit scopeMetricsChanged();
 }
 
+QString PokitController::captureStoragePath() const
+{
+    const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    return QDir(documents).filePath(QStringLiteral("PokitSuite/Captures"));
+}
+
+void PokitController::refreshSavedCaptures()
+{
+    QDir directory(captureStoragePath());
+    directory.mkpath(QStringLiteral("."));
+    const QFileInfoList files = directory.entryInfoList(
+        {QStringLiteral("PokitScope_*.json")}, QDir::Files, QDir::Time);
+    QVariantList captures;
+    for (const QFileInfo &info : files) {
+        QFile file(info.filePath());
+        if (!file.open(QIODevice::ReadOnly)) continue;
+        const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+        if (!document.isObject()) continue;
+        const QJsonObject object = document.object();
+        const QJsonObject metrics = object.value(QStringLiteral("metrics")).toObject();
+        QVariantMap entry;
+        entry.insert(QStringLiteral("name"), object.value(QStringLiteral("display_name")).toString(info.baseName()));
+        entry.insert(QStringLiteral("path"), info.filePath());
+        entry.insert(QStringLiteral("pdfPath"), info.dir().filePath(info.completeBaseName() + QStringLiteral(".pdf")));
+        entry.insert(QStringLiteral("sampleCount"), object.value(QStringLiteral("waveform_v")).toArray().size());
+        entry.insert(QStringLiteral("vpp"), metrics.value(QStringLiteral("vpp_v")).toDouble());
+        entry.insert(QStringLiteral("frequency"), metrics.value(QStringLiteral("frequency_hz")).toDouble());
+        captures.append(entry);
+    }
+    m_savedCaptures = captures;
+    emit savedCapturesChanged();
+}
+
+bool PokitController::writeCapturePdf(const QString &path, const QJsonObject &capture) const
+{
+    QPdfWriter writer(path);
+    writer.setPageSize(QPageSize(QPageSize::A4));
+    writer.setResolution(300);
+    writer.setTitle(QStringLiteral("PokitSuite Oscilloscope Capture"));
+    writer.setCreator(QStringLiteral("PokitSuite"));
+    QPainter painter(&writer);
+    if (!painter.isActive()) return false;
+
+    const int pageWidth = writer.width();
+    const int margin = 180;
+    const QRect content(margin, margin, pageWidth - margin * 2, writer.height() - margin * 2);
+    painter.fillRect(QRect(0, 0, writer.width(), writer.height()), QColor(QStringLiteral("#ffffff")));
+
+    QFont titleFont(QStringLiteral("Segoe UI"), 22, QFont::Bold);
+    QFont sectionFont(QStringLiteral("Segoe UI"), 12, QFont::Bold);
+    QFont bodyFont(QStringLiteral("Segoe UI"), 9);
+    painter.setFont(titleFont);
+    painter.setPen(QColor(QStringLiteral("#12212b")));
+    painter.drawText(QRect(content.left(), content.top(), content.width(), 120),
+                     Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("PokitSuite Oscilloscope Report"));
+    painter.setFont(bodyFont);
+    painter.setPen(QColor(QStringLiteral("#4d626e")));
+    painter.drawText(content.left(), content.top() + 135,
+                     QStringLiteral("Capture: %1").arg(capture.value(QStringLiteral("display_name")).toString()));
+    painter.drawText(content.left(), content.top() + 185,
+                     QStringLiteral("Device: %1").arg(capture.value(QStringLiteral("device")).toString()));
+
+    const QRect plot(content.left(), content.top() + 270, content.width(), 1180);
+    painter.fillRect(plot, QColor(QStringLiteral("#07100b")));
+    painter.setPen(QPen(QColor(QStringLiteral("#294a34")), 2));
+    for (int i = 0; i <= 10; ++i) {
+        const int x = plot.left() + i * plot.width() / 10;
+        painter.drawLine(x, plot.top(), x, plot.bottom());
+    }
+    for (int i = 0; i <= 8; ++i) {
+        const int y = plot.top() + i * plot.height() / 8;
+        painter.drawLine(plot.left(), y, plot.right(), y);
+    }
+    painter.setPen(QPen(QColor(QStringLiteral("#6b8171")), 3));
+    painter.drawLine(plot.center().x(), plot.top(), plot.center().x(), plot.bottom());
+    painter.drawLine(plot.left(), plot.center().y(), plot.right(), plot.center().y());
+
+    const QJsonArray waveform = capture.value(QStringLiteral("waveform_v")).toArray();
+    const QJsonObject settings = capture.value(QStringLiteral("settings")).toObject();
+    const double voltsPerDiv = qMax(0.001, settings.value(QStringLiteral("volts_per_div")).toDouble(1.0));
+    if (waveform.size() > 1) {
+        QPainterPath pathShape;
+        for (int index = 0; index < waveform.size(); ++index) {
+            const double x = plot.left() + double(index) * plot.width() / double(waveform.size() - 1);
+            const double y = plot.center().y() - waveform.at(index).toDouble() / voltsPerDiv * plot.height() / 8.0;
+            if (index == 0) pathShape.moveTo(x, y); else pathShape.lineTo(x, y);
+        }
+        painter.save();
+        painter.setClipRect(plot.adjusted(2, 2, -2, -2));
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(QColor(QStringLiteral("#ffd629")), 6));
+        painter.drawPath(pathShape);
+        painter.restore();
+    }
+    painter.setFont(sectionFont);
+    painter.setPen(QColor(QStringLiteral("#12212b")));
+    painter.drawText(content.left(), plot.bottom() + 100, QStringLiteral("Measured and derived values"));
+
+    const QJsonObject metrics = capture.value(QStringLiteral("metrics")).toObject();
+    struct ReportRow { QString label; QString value; };
+    const QList<ReportRow> rows{
+        {QStringLiteral("Minimum"), QString::number(metrics.value(QStringLiteral("minimum_v")).toDouble(), 'f', 6) + QStringLiteral(" V")},
+        {QStringLiteral("Maximum"), QString::number(metrics.value(QStringLiteral("maximum_v")).toDouble(), 'f', 6) + QStringLiteral(" V")},
+        {QStringLiteral("Peak-to-peak"), QString::number(metrics.value(QStringLiteral("vpp_v")).toDouble(), 'f', 6) + QStringLiteral(" V")},
+        {QStringLiteral("Mean"), QString::number(metrics.value(QStringLiteral("mean_v")).toDouble(), 'f', 6) + QStringLiteral(" V")},
+        {QStringLiteral("RMS"), QString::number(metrics.value(QStringLiteral("rms_v")).toDouble(), 'f', 6) + QStringLiteral(" V")},
+        {QStringLiteral("Frequency"), QString::number(metrics.value(QStringLiteral("frequency_hz")).toDouble(), 'f', 3) + QStringLiteral(" Hz")},
+        {QStringLiteral("Period"), QString::number(metrics.value(QStringLiteral("period_s")).toDouble(), 'g', 7) + QStringLiteral(" s")},
+        {QStringLiteral("Cycles"), QString::number(metrics.value(QStringLiteral("cycles")).toDouble(), 'f', 0)},
+        {QStringLiteral("Duty cycle"), QString::number(metrics.value(QStringLiteral("duty_cycle_percent")).toDouble(), 'f', 2) + QStringLiteral(" %")},
+        {QStringLiteral("Sample rate"), QString::number(settings.value(QStringLiteral("sample_rate_hz")).toDouble(), 'f', 0) + QStringLiteral(" S/s")},
+        {QStringLiteral("Sample count"), QString::number(waveform.size())},
+        {QStringLiteral("Time / div"), QString::number(settings.value(QStringLiteral("time_per_div_us")).toInt()) + QStringLiteral(" us")},
+        {QStringLiteral("Voltage / div"), QString::number(voltsPerDiv, 'g', 6) + QStringLiteral(" V")},
+        {QStringLiteral("Coupling"), settings.value(QStringLiteral("coupling")).toString()},
+        {QStringLiteral("Trigger"), settings.value(QStringLiteral("trigger_mode")).toString() + QStringLiteral(" at ") +
+            QString::number(settings.value(QStringLiteral("trigger_level_v")).toDouble(), 'f', 3) + QStringLiteral(" V")}
+    };
+    const int tableTop = plot.bottom() + 150;
+    const int rowHeight = 88;
+    const int labelWidth = content.width() * 46 / 100;
+    painter.setFont(bodyFont);
+    for (int index = 0; index < rows.size(); ++index) {
+        const QRect row(content.left(), tableTop + index * rowHeight, content.width(), rowHeight);
+        painter.fillRect(row, index % 2 ? QColor(QStringLiteral("#eef3f5")) : QColor(QStringLiteral("#f8fafb")));
+        painter.setPen(QColor(QStringLiteral("#c6d0d5")));
+        painter.drawRect(row);
+        painter.drawLine(row.left() + labelWidth, row.top(), row.left() + labelWidth, row.bottom());
+        painter.setPen(QColor(QStringLiteral("#263942")));
+        painter.drawText(row.adjusted(22, 0, -22, 0), Qt::AlignLeft | Qt::AlignVCenter, rows[index].label);
+        painter.drawText(row.adjusted(labelWidth + 22, 0, -22, 0), Qt::AlignLeft | Qt::AlignVCenter, rows[index].value);
+    }
+    painter.setPen(QColor(QStringLiteral("#70838d")));
+    painter.drawText(QRect(content.left(), content.bottom() - 80, content.width(), 60),
+                     Qt::AlignRight | Qt::AlignVCenter,
+                     QStringLiteral("PokitSuite - generated %1").arg(QDateTime::currentDateTime().toString(Qt::ISODate)));
+    painter.end();
+    return QFileInfo(path).exists() && QFileInfo(path).size() > 0;
+}
+
+QString PokitController::saveScopeCapture()
+{
+    if (m_scopeValues.size() < 2) {
+        setStatus(QStringLiteral("Keine vollständige Scope-Aufnahme zum Speichern vorhanden"));
+        return {};
+    }
+    QDir directory(captureStoragePath());
+    if (!directory.mkpath(QStringLiteral("."))) {
+        setStatus(QStringLiteral("Capture-Ordner konnte nicht erstellt werden"));
+        return {};
+    }
+    const QDateTime now = QDateTime::currentDateTime();
+    const QString base = QStringLiteral("PokitScope_%1").arg(now.toString(QStringLiteral("yyyyMMdd_HHmmss_zzz")));
+    const QString displayName = now.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    QJsonObject metrics{
+        {QStringLiteral("minimum_v"), m_scopeMinimum}, {QStringLiteral("maximum_v"), m_scopeMaximum},
+        {QStringLiteral("vpp_v"), m_scopeVpp}, {QStringLiteral("mean_v"), m_scopeMean},
+        {QStringLiteral("rms_v"), m_scopeRms}, {QStringLiteral("frequency_hz"), m_scopeFrequency},
+        {QStringLiteral("period_s"), m_scopePeriod}, {QStringLiteral("cycles"), m_scopeCycles},
+        {QStringLiteral("duty_cycle_percent"), m_scopeDutyCycle}
+    };
+    QJsonObject settings{
+        {QStringLiteral("sample_rate_hz"), double(m_scopeMetadata.samplingRate)},
+        {QStringLiteral("sampling_window_us"), double(m_scopeMetadata.samplingWindow)},
+        {QStringLiteral("time_per_div_us"), m_scopeTimePerDivUs},
+        {QStringLiteral("volts_per_div"), m_scopeVoltsPerDiv},
+        {QStringLiteral("coupling"), m_scopeCoupling},
+        {QStringLiteral("trigger_mode"), m_triggerMode},
+        {QStringLiteral("trigger_level_v"), m_triggerLevel}
+    };
+    QJsonArray waveform;
+    for (double value : m_scopeValues) waveform.append(value);
+    QJsonObject capture{
+        {QStringLiteral("schema"), QStringLiteral("pokitsuite.scope-capture.v1")},
+        {QStringLiteral("display_name"), displayName},
+        {QStringLiteral("timestamp_utc"), now.toUTC().toString(Qt::ISODateWithMs)},
+        {QStringLiteral("device"), m_deviceName}, {QStringLiteral("metrics"), metrics},
+        {QStringLiteral("settings"), settings}, {QStringLiteral("waveform_v"), waveform}
+    };
+    const QString jsonPath = directory.filePath(base + QStringLiteral(".json"));
+    QSaveFile jsonFile(jsonPath);
+    if (!jsonFile.open(QIODevice::WriteOnly) ||
+        jsonFile.write(QJsonDocument(capture).toJson(QJsonDocument::Indented)) < 0 || !jsonFile.commit()) {
+        setStatus(QStringLiteral("Messdatei konnte nicht gespeichert werden"));
+        return {};
+    }
+    const QString csvPath = directory.filePath(base + QStringLiteral(".csv"));
+    QSaveFile csvFile(csvPath);
+    if (csvFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QTextStream stream(&csvFile);
+        stream << "sample_index,time_s,voltage_v\n";
+        const double sampleRate = m_scopeMetadata.samplingRate;
+        for (int index = 0; index < m_scopeValues.size(); ++index)
+            stream << index << ',' << QString::number(sampleRate > 0 ? index / sampleRate : 0.0, 'g', 12)
+                   << ',' << QString::number(m_scopeValues[index], 'g', 12) << '\n';
+        csvFile.commit();
+    }
+    const QString pdfPath = directory.filePath(base + QStringLiteral(".pdf"));
+    if (!writeCapturePdf(pdfPath, capture)) {
+        setStatus(QStringLiteral("Messwerte gespeichert, PDF-Erstellung fehlgeschlagen"));
+        refreshSavedCaptures();
+        return {};
+    }
+    refreshSavedCaptures();
+    setStatus(QStringLiteral("Scope-Aufnahme als PDF und Wertetabelle gespeichert"));
+    return pdfPath;
+}
+
+void PokitController::loadScopeCapture(const QString &jsonPath)
+{
+    const QFileInfo info(jsonPath);
+    const QDir storage(captureStoragePath());
+    const QString relativePath = storage.relativeFilePath(info.absoluteFilePath());
+    if (!info.exists() || info.suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) != 0 ||
+        relativePath == QStringLiteral("..") || relativePath.startsWith(QStringLiteral("../")) ||
+        QDir::isAbsolutePath(relativePath)) {
+        setStatus(QStringLiteral("Ungültige gespeicherte Aufnahme"));
+        return;
+    }
+    QFile file(info.filePath());
+    if (!file.open(QIODevice::ReadOnly)) return;
+    const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
+    const QJsonArray waveform = object.value(QStringLiteral("waveform_v")).toArray();
+    QVector<double> values; values.reserve(waveform.size());
+    for (const QJsonValue &value : waveform) values.append(value.toDouble());
+    if (values.size() < 2) return;
+    m_referenceValues = values;
+    m_referenceName = object.value(QStringLiteral("display_name")).toString(info.baseName());
+    emit referenceChanged();
+    setStatus(QStringLiteral("Vergleichskurve geladen: %1").arg(m_referenceName));
+}
+
+void PokitController::clearScopeReference()
+{
+    m_referenceValues.clear();
+    m_referenceName.clear();
+    emit referenceChanged();
+}
+
+void PokitController::openCaptureFolder()
+{
+    QDir directory(captureStoragePath());
+    directory.mkpath(QStringLiteral("."));
+    QDesktopServices::openUrl(QUrl::fromLocalFile(directory.absolutePath()));
+}
+
 void PokitController::publishAutomationState()
 {
     const QDir root(QDir::current());
@@ -306,6 +572,8 @@ void PokitController::publishAutomationState()
         {QStringLiteral("coupling"), m_scopeCoupling},
         {QStringLiteral("trigger_mode"), m_triggerMode},
         {QStringLiteral("trigger_level_v"), m_triggerLevel},
+        {QStringLiteral("reference_name"), m_referenceName},
+        {QStringLiteral("reference_samples"), m_referenceValues.size()},
         {QStringLiteral("metrics"), metrics},
         {QStringLiteral("waveform_v"), waveform}
     };
@@ -344,6 +612,10 @@ void PokitController::processAutomationCommands()
     else if (action == QStringLiteral("scope_run")) setScopeRunning(true);
     else if (action == QStringLiteral("scope_stop")) setScopeRunning(false);
     else if (action == QStringLiteral("scope_single")) scopeSingle();
+    else if (action == QStringLiteral("save_scope_capture")) saveScopeCapture();
+    else if (action == QStringLiteral("load_scope_reference"))
+        loadScopeCapture(command.value(QStringLiteral("json_path")).toString());
+    else if (action == QStringLiteral("clear_scope_reference")) clearScopeReference();
     else if (action == QStringLiteral("scope_config")) {
         setScopeConfig(command.value(QStringLiteral("coupling")).toString(QStringLiteral("DC")),
                        command.value(QStringLiteral("volts_per_div")).toDouble(m_scopeVoltsPerDiv),

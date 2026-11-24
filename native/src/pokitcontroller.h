@@ -10,6 +10,7 @@
 class PokitDevice;
 class PokitDiscoveryAgent;
 class QBluetoothDeviceInfo;
+class QJsonObject;
 
 class PokitController final : public QObject
 {
@@ -32,6 +33,9 @@ class PokitController final : public QObject
     Q_PROPERTY(double scopePeriod READ scopePeriod NOTIFY scopeMetricsChanged)
     Q_PROPERTY(double scopeCycles READ scopeCycles NOTIFY scopeMetricsChanged)
     Q_PROPERTY(double scopeDutyCycle READ scopeDutyCycle NOTIFY scopeMetricsChanged)
+    Q_PROPERTY(QVariantList savedCaptures READ savedCaptures NOTIFY savedCapturesChanged)
+    Q_PROPERTY(QVariantList referenceSamples READ referenceSamples NOTIFY referenceChanged)
+    Q_PROPERTY(QString referenceName READ referenceName NOTIFY referenceChanged)
     Q_PROPERTY(QString activeFeature READ activeFeature NOTIFY activeFeatureChanged)
 
 public:
@@ -54,6 +58,9 @@ public:
     double scopePeriod() const { return m_scopePeriod; }
     double scopeCycles() const { return m_scopeCycles; }
     double scopeDutyCycle() const { return m_scopeDutyCycle; }
+    QVariantList savedCaptures() const { return m_savedCaptures; }
+    QVariantList referenceSamples() const;
+    QString referenceName() const { return m_referenceName; }
     QString activeFeature() const { return m_feature; }
 
     Q_INVOKABLE void connectDevice();
@@ -65,6 +72,10 @@ public:
     Q_INVOKABLE void setScopeConfig(const QString &coupling, double voltsPerDiv, int timePerDivUs);
     Q_INVOKABLE void setScopeRunning(bool running);
     Q_INVOKABLE void scopeSingle();
+    Q_INVOKABLE QString saveScopeCapture();
+    Q_INVOKABLE void loadScopeCapture(const QString &jsonPath);
+    Q_INVOKABLE void clearScopeReference();
+    Q_INVOKABLE void openCaptureFolder();
 
 signals:
     void statusChanged();
@@ -75,6 +86,8 @@ signals:
     void scopeSamplesChanged();
     void scopeStateChanged();
     void scopeMetricsChanged();
+    void savedCapturesChanged();
+    void referenceChanged();
     void activeFeatureChanged();
 
 private:
@@ -89,6 +102,9 @@ private:
     void publishAutomationState();
     void processAutomationCommands();
     void scheduleReconnect();
+    void refreshSavedCaptures();
+    QString captureStoragePath() const;
+    bool writeCapturePdf(const QString &path, const QJsonObject &capture) const;
 
     PokitDiscoveryAgent *m_discovery = nullptr;
     PokitDevice *m_device = nullptr;
@@ -133,5 +149,8 @@ private:
     QVector<double> m_meterValues;
     QVector<double> m_scopeValues;
     QVector<double> m_scopePendingValues;
+    QVariantList m_savedCaptures;
+    QVector<double> m_referenceValues;
+    QString m_referenceName;
 };
 

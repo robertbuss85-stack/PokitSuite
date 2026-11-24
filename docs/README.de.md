@@ -23,6 +23,8 @@ Vorausgesetzt werden Windows 10/11 x64 und Bluetooth Low Energy. Ausführliche H
 
 Beim Wechsel zwischen Multimeter und Oszilloskop wird der bisherige Modus gestoppt und der neue automatisch gestartet. Im Oszilloskop verändert das Mausrad über dem Diagramm die horizontale Zeitbasis. `Run/Stop` schaltet die fortlaufende Erfassung, `Single` löst eine Einzelaufnahme aus.
 
+Mit **PDF + Werte speichern** wird die aktuelle vollständige Aufnahme unter `Dokumente/PokitSuite/Captures` abgelegt: als PDF-Messbericht mit Oszilloskopbild und Kennwerttabelle, als CSV-Wertetabelle mit Zeit- und Spannungswerten sowie als JSON-Aufnahme für PokitSuite. Gespeicherte Aufnahmen können in der Capture-Liste ausgewählt und als cyanfarbene Vergleichskurve über die gelbe Live-Kurve gelegt werden.
+
 Die Frequenz- und Tastgradmessung setzt ein ausreichend sauberes, periodisches Signal voraus. Bei starkem Rauschen, Clipping oder weniger als einer vollständigen Periode können Werte fehlen oder ungenau sein.
 
 ## Sicherheit

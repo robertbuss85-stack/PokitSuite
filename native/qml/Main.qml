@@ -74,7 +74,10 @@ ApplicationWindow {
                                 Label { text:pokit.scopeSampleRate>0?Math.round(pokit.scopeSampleRate/1000)+" kS/s":"— kS/s";color:"#b9c6bc" }
                             }
                             Canvas { id:scopeCanvas;Layout.fillWidth:true;Layout.fillHeight:true
-                                Connections { target:pokit;function onScopeSamplesChanged(){scopeCanvas.requestPaint()} }
+                                Connections { target:pokit
+                                    function onScopeSamplesChanged(){scopeCanvas.requestPaint()}
+                                    function onReferenceChanged(){scopeCanvas.requestPaint()}
+                                }
                                 onWidthChanged:requestPaint();onHeightChanged:requestPaint()
                                 onPaint:{
                                     let c=getContext("2d"),a=pokit.scopeSamples;c.reset();c.fillStyle="#07100b";c.fillRect(0,0,width,height);c.strokeStyle="#294a34";c.lineWidth=1
@@ -83,6 +86,8 @@ ApplicationWindow {
                                     c.strokeStyle="#67806d";c.beginPath();c.moveTo(width/2,0);c.lineTo(width/2,height);c.stroke();c.beginPath();c.moveTo(0,height/2);c.lineTo(width,height/2);c.stroke()
                                     let tx=root.triggerPosition*width;c.fillStyle="#ff8c42";c.beginPath();c.moveTo(tx-7,0);c.lineTo(tx+7,0);c.lineTo(tx,10);c.closePath();c.fill()
                                     let zero=height/2-root.verticalPosition/root.voltsDiv*height/8;c.fillStyle=root.ch1;c.beginPath();c.moveTo(0,zero);c.lineTo(10,zero-6);c.lineTo(10,zero+6);c.closePath();c.fill()
+                                    let saved=pokit.referenceSamples
+                                    if(saved.length>=2){c.globalAlpha=.72;c.strokeStyle="#55dff5";c.lineWidth=2;c.beginPath();for(let q=0;q<saved.length;q++){let sx=q*width/(saved.length-1),sy=height/2-((saved[q]-root.verticalPosition)/root.voltsDiv)*height/8;q?c.lineTo(sx,sy):c.moveTo(sx,sy)}c.stroke();c.globalAlpha=1}
                                     if(a.length<2)return;c.strokeStyle=root.ch1;c.lineWidth=2;c.beginPath();for(let j=0;j<a.length;j++){let x=j*width/(a.length-1),y=height/2-((a[j]-root.verticalPosition)/root.voltsDiv)*height/8;j?c.lineTo(x,y):c.moveTo(x,y)}c.stroke()
                                 }
                                 MouseArea { anchors.fill:parent;acceptedButtons:Qt.NoButton
@@ -126,6 +131,20 @@ ApplicationWindow {
                                         RowLayout { Label{text:"Quelle";Layout.fillWidth:true} ComboBox{model:["CH1","CH2","CH3","CH4"];enabled:false} }
                                         Label { text:"Pegel  "+(triggerLevel.value/100).toFixed(2)+" V" }
                                         Slider { id:triggerLevel;Layout.fillWidth:true;from:-400;to:400;value:0;stepSize:1;onMoved:pokit.setScopeTrigger(["free","rising","falling"][triggerMode.currentIndex],value/100) }
+                                    }
+                                }
+                                GroupBox { title:"CAPTURE & VERGLEICH";Layout.fillWidth:true
+                                    ColumnLayout { anchors.fill:parent
+                                        RowLayout { Layout.fillWidth:true
+                                            Button { text:"PDF + WERTE SPEICHERN";Layout.fillWidth:true;onClicked:pokit.saveScopeCapture() }
+                                            Button { text:"ORDNER";onClicked:pokit.openCaptureFolder() }
+                                        }
+                                        ComboBox { id:captureBox;Layout.fillWidth:true;model:pokit.savedCaptures;textRole:"name";displayText:currentIndex>=0?currentText:"Gespeicherte Aufnahme wählen";onActivated:{let item=pokit.savedCaptures[currentIndex];if(item)pokit.loadScopeCapture(item.path)} }
+                                        RowLayout { Layout.fillWidth:true
+                                            Label { Layout.fillWidth:true;elide:Text.ElideRight;text:pokit.referenceName.length?"Vergleich: "+pokit.referenceName:"Keine Vergleichskurve";color:pokit.referenceName.length?"#15839a":"#5e676b" }
+                                            Button { text:"AUSBLENDEN";enabled:pokit.referenceName.length>0;onClicked:pokit.clearScopeReference() }
+                                        }
+                                        Label { Layout.fillWidth:true;wrapMode:Text.WordWrap;font.pixelSize:10;color:"#5e676b";text:"PDF-Bericht, JSON-Aufnahme und CSV-Wertetabelle werden gemeinsam gespeichert." }
                                     }
                                 }
                                 RowLayout { Layout.fillWidth:true
