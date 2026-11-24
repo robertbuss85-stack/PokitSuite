@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="PokitSuite: a native DMM, DSO and MCP bridge for Pokit Pro.">
+  <title>PokitSuite · Native measurement and AI bridge</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="nav"><a class="brand" href="#top"><span>P</span>PokitSuite</a><nav><a href="#features">Features</a><a href="#mcp">MCP</a><a href="#status">Status</a><a href="https://github.com/robertbuss85-stack/PokitSuite">GitHub</a></nav></header>
+  <main id="top">
+    <section class="hero">
+      <div><p class="eyebrow">POKIT PRO · WINDOWS · OPEN SOURCE</p><h1>Bench-style measurements.<br><em>AI-ready instrumentation.</em></h1><p class="lead">A native digital multimeter and TDS 220-inspired oscilloscope with robust Bluetooth acquisition, live signal metrics, and a local MCP interface.</p><div class="actions"><a class="primary" href="https://github.com/robertbuss85-stack/PokitSuite/releases/latest">Download for Windows</a><a class="secondary" href="https://github.com/robertbuss85-stack/PokitSuite">View source</a></div><p class="credit">Developed with substantial assistance from <strong>OpenAI Codex</strong>; directed and hardware-tested by the project owner.</p></div>
+      <div class="scope-card"><img src="assets/pokitsuite-scope.png" alt="PokitSuite oscilloscope showing a live waveform"><span>Real Pokit Pro capture · CH1</span></div>
+    </section>
+    <section id="features" class="section"><p class="eyebrow">MEASUREMENT WORKSPACE</p><h2>Made to behave like an instrument</h2><div class="grid three"><article><b>01</b><h3>Live DMM</h3><p>Automatic acquisition, 0.5/1 second intervals, selectable modes, and a time-value history recorder.</p></article><article><b>02</b><h3>Digital scope</h3><p>Run/stop/single acquisition, true time/div behavior, V/div, coupling, trigger controls and mouse-wheel timebase.</p></article><article><b>03</b><h3>Signal metrics</h3><p>Vpp, min/max, mean, RMS, frequency, period, cycles and duty cycle update with complete frames.</p></article></div></section>
+    <section id="mcp" class="section split"><div><p class="eyebrow">MODEL CONTEXT PROTOCOL</p><h2>Measurements become tools</h2><p class="lead small">Seventeen local MCP tools give compatible AI clients structured access to device state, DMM values, scope frames and configuration—plus guarded Arduino sketch, compile, upload and serial workflows.</p><a class="text-link" href="https://github.com/robertbuss85-stack/PokitSuite/blob/main/docs/MCP.md">Read the MCP guide →</a></div><pre><code>get_scope_frame()
+
+evaluate_scope_reference(
+  frequency_hz=1000,
+  vpp=3.3,
+  tolerance_percent=5
+)
+
+# diagnose → edit → compile
+# → supervised upload → remeasure</code></pre></section>
+    <section class="section visual"><img src="assets/pokitsuite-multimeter.png" alt="PokitSuite digital multimeter connected to Pokit Pro"><div><p class="eyebrow">REAL HARDWARE</p><h2>Built through measurement, not mockups</h2><p>The connection lifecycle, live DMM and CH1 DSO were iterated against a physical Pokit Pro on Windows. Screenshots on this page are genuine application captures.</p></div></section>
+    <section id="status" class="section"><p class="eyebrow">HONEST PROJECT STATUS</p><h2>Clear boundaries</h2><div class="grid four"><article class="good"><span>TESTED</span><h3>Pokit Pro + CH1</h3><p>BLE reconnect, DMM, DSO, timebase, metrics.</p></article><article><span>PROTOCOL-TESTED</span><h3>MCP</h3><p>stdio handshake and all 17 tool schemas.</p></article><article class="warn"><span>EXPERIMENTAL</span><h3>Arduino loop</h3><p>Board- and target-dependent, supervised operation.</p></article><article><span>PLANNED</span><h3>Four channels</h3><p>UI-ready concept; multi-device acquisition remains open.</p></article></div></section>
+  </main>
+  <footer><span>PokitSuite · GPL-3.0-or-later</span><span>Independent project; no affiliation with Pokit Innovations, Tektronix or OpenAI.</span></footer>
+</body>
+</html>
+

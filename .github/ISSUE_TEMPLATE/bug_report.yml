@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible PokitSuite problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Remove credentials, personal paths, private sketches and unrelated telemetry.
+  - type: input
+    id: version
+    attributes:
+      label: PokitSuite version/commit
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Windows, device and Bluetooth adapter
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Reproduced with physical hardware?
+      options: ["Yes", "No", "Not applicable"]
+    validations:
+      required: true
+

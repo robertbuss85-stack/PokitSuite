@@ -1,0 +1,141 @@
+// SPDX-FileCopyrightText: 2022-2026 Paul Colby <git@colby.id.au>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
+#include "infocommand.h"
+#include "../stringliterals_p.h"
+
+#include <qtpokit/deviceinfoservice.h>
+#include <qtpokit/pokitdevice.h>
+
+#include <QJsonDocument>
+#include <QJsonObject>
+
+#include <iostream>
+
+DOKIT_USE_STRINGLITERALS
+
+/*!
+ * \class InfoCommand
+ *
+ * The InfoCommand class implements the `info` CLI command.
+ */
+
+/*!
+ * Construct a new InfoCommand object with \a parent.
+ */
+InfoCommand::InfoCommand(QObject * const parent) : DeviceCommand(parent)
+{
+
+}
+
+QStringList InfoCommand::requiredOptions(const QCommandLineParser &parser) const
+{
+    return DeviceCommand::requiredOptions(parser) + QStringList{
+    };
+}
+
+QStringList InfoCommand::supportedOptions(const QCommandLineParser &parser) const
+{
+    return DeviceCommand::supportedOptions(parser);
+}
+
+/*!
+ * \copybrief DeviceCommand::processOptions
+ *
+ * This implementation extends DeviceCommand::processOptions to process additional CLI options
+ * supported (or required) by this command.
+ */
+QStringList InfoCommand::processOptions(const QCommandLineParser &parser)
+{
+    QStringList errors = DeviceCommand::processOptions(parser);
+    if (!errors.isEmpty()) {
+        return errors;
+    }
+
+    return errors;
+}
+
+/*!
+ * \copybrief DeviceCommand::getService
+ *
+ * This override returns a pointer to a DeviceInfoService object.
+ */
+AbstractPokitService * InfoCommand::getService()
+{
+    Q_ASSERT(device);
+    if (!service) {
+        service = device->deviceInformation();
+        Q_ASSERT(service);
+    }
+    return service;
+}
+
+/*!
+ * \copybrief DeviceCommand::serviceDetailsDiscovered
+ *
+ * This override fetches the current device's information, and outputs it in the selected format.
+ */
+void InfoCommand::serviceDetailsDiscovered()
+{
+    DeviceCommand::serviceDetailsDiscovered(); // Just logs consistently.
+    const QLowEnergyController * const controller = (device) ? device->controller() : nullptr;
+    const QString deviceName = (controller) ? controller->remoteName() : QString();
+    const QBluetoothAddress deviceAddress = (controller) ? controller->remoteAddress() : QBluetoothAddress();
+    const QBluetoothUuid deviceUuid = (controller) ? controller->remoteDeviceUuid() : QBluetoothUuid();
+    const QString serialNumber = service->serialNumber();
+    switch (format) {
+    case OutputFormat::Csv:
+        std::cout << qUtf8Printable(tr("device_name,device_address,device_uuid,manufacturer_name,model_number,"
+                            "hardware_revision,firmware_revision,software_revision,serial_number\n"));
+        std::cout << qUtf8Printable(QString::fromLatin1("%1,%2,%3,%4,%5,%6,%7,%8,%9\n").arg(
+            escapeCsvField(deviceName),
+            (deviceAddress.isNull()) ? QString() : deviceAddress.toString(),
+            (deviceUuid.isNull()) ? QString() : deviceUuid.toString(),
+            escapeCsvField(service->manufacturer()), escapeCsvField(service->modelNumber()),
+            escapeCsvField(service->hardwareRevision()), escapeCsvField(service->firmwareRevision()),
+            escapeCsvField(service->softwareRevision()), escapeCsvField(serialNumber)));
+        break;
+    case OutputFormat::Json: {
+        QJsonObject jsonObject{
+            { u"manufacturerName"_s, service->manufacturer() },
+            { u"modelNumber"_s,      service->modelNumber() },
+            { u"hardwareRevision"_s, service->hardwareRevision() },
+            { u"firmwareRevision"_s, service->firmwareRevision() },
+            { u"softwareRevision"_s, service->softwareRevision() },
+        };
+        if (!deviceName.isEmpty()) {
+            jsonObject.insert(u"deviceName"_s, deviceName);
+        }
+        if (!deviceAddress.isNull()) {
+            jsonObject.insert(u"deviceAddress"_s, deviceAddress.toString());
+        }
+        if (!deviceUuid.isNull()) {
+            jsonObject.insert(u"deviceUuid"_s, deviceUuid.toString());
+        }
+        if (!serialNumber.isNull()) {
+            jsonObject.insert(u"serialNumber"_s, serialNumber);
+        }
+        std::cout << QJsonDocument(jsonObject).toJson().toStdString();
+    }   break;
+    case OutputFormat::Text:
+        if (!deviceName.isEmpty()) {
+            std::cout << qUtf8Printable(tr("Device name:       %1\n").arg(deviceName));
+        }
+        if (!deviceAddress.isNull()) {
+            std::cout << qUtf8Printable(tr("Device address:    %1\n").arg(deviceAddress.toString()));
+        }
+        if (!deviceUuid.isNull()) {
+            std::cout << qUtf8Printable(tr("Device UUID:       %1\n").arg(deviceUuid.toString()));
+        }
+        std::cout << qUtf8Printable(tr("Manufacturer name: %1\n").arg(service->manufacturer()));
+        std::cout << qUtf8Printable(tr("Model number:      %1\n").arg(service->modelNumber()));
+        std::cout << qUtf8Printable(tr("Hardware revision: %1\n").arg(service->hardwareRevision()));
+        std::cout << qUtf8Printable(tr("Firmware revision: %1\n").arg(service->firmwareRevision()));
+        std::cout << qUtf8Printable(tr("Software revision: %1\n").arg(service->softwareRevision()));
+        if (!serialNumber.isNull()) {
+            std::cout << qUtf8Printable(tr("Serial number:     %1\n").arg(serialNumber));
+        }
+        break;
+    }
+    if (device) disconnect(); // Will exit the application once disconnected.
+}

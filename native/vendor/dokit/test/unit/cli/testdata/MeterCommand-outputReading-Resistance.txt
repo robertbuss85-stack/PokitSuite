@@ -1,0 +1,4 @@
+Mode:   Resistance (0x05)
+Value:  123.400002 Ω
+Status: Auto Range Off (0x00)
+Range:  Up to 10KΩ (0x04)

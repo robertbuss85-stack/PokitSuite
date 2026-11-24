@@ -1,0 +1,16 @@
+/native/build*/
+/.tmp-dokit-source/
+/dokit-*.portable/
+/dokit-*.txz
+/data/*
+!/data/.gitkeep
+/**/__pycache__/
+*.py[cod]
+/.venv/
+/dist/
+/artifacts/
+/aqtinstall.log
+/$tmpJs
+/.idea/
+/.vscode/
+

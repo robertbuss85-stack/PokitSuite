@@ -1,0 +1,26 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Dokit
+#GenericName
+NoDisplay=true
+Comment=Console application for accessing Pokit measuring devices.
+Icon=dokit
+#Hidden
+#OnlyShowIn
+#NotShowIn
+#DBusActivatable
+TryExec=dokit
+Exec=dokit
+#Path
+#Terminal
+#Actions
+#MimeType
+Categories=Science
+#Implements
+#Keywords
+#StartupNotify
+#StartupWMClass
+#URL
+#PrefersNonDefaultGPU
+#SingleMainWindow

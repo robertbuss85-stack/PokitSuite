@@ -1,0 +1,40 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          arch: win64_msvc2022_64
+          modules: qtconnectivity
+          cache: true
+      - run: cmake -S native -B native/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build native/build --parallel
+      - name: Assemble portable package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/PokitSuite | Out-Null
+          Copy-Item native/build/PokitSuiteNative.exe,native/build/QtPokit.dll dist/PokitSuite/
+          Copy-Item LICENSE,THIRD_PARTY_NOTICES.md,README.md dist/PokitSuite/
+          & windeployqt --release --qmldir native/qml dist/PokitSuite/PokitSuiteNative.exe
+          Compress-Archive -Path dist/PokitSuite -DestinationPath PokitSuite-Windows-x64.zip
+          (Get-FileHash PokitSuite-Windows-x64.zip -Algorithm SHA256).Hash.ToLower() + '  PokitSuite-Windows-x64.zip' | Set-Content SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PokitSuite-Windows-x64
+          path: |
+            PokitSuite-Windows-x64.zip
+            SHA256SUMS.txt
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release create $env:GITHUB_REF_NAME PokitSuite-Windows-x64.zip SHA256SUMS.txt --verify-tag --generate-notes --title "PokitSuite $env:GITHUB_REF_NAME"
+

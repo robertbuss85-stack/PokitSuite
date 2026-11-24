@@ -1,0 +1,478 @@
+// SPDX-FileCopyrightText: 2022-2026 Paul Colby <git@colby.id.au>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
+#include "dsocommand.h"
+#include "../stringliterals_p.h"
+
+#include <qtpokit/pokitdevice.h>
+
+#include <QJsonDocument>
+#include <QJsonObject>
+
+#include <iostream>
+
+DOKIT_USE_STRINGLITERALS
+
+/*!
+ * \class DsoCommand
+ *
+ * The DsoCommand class implements the `dso` CLI command.
+ */
+
+/*!
+ * Construct a new DsoCommand object with \a parent.
+ */
+DsoCommand::DsoCommand(QObject * const parent) : DeviceCommand(parent)
+{
+
+}
+
+QStringList DsoCommand::requiredOptions(const QCommandLineParser &parser) const
+{
+    return DeviceCommand::requiredOptions(parser) + QStringList{
+        u"mode"_s,
+        u"range"_s,
+    };
+}
+
+QStringList DsoCommand::supportedOptions(const QCommandLineParser &parser) const
+{
+    return DeviceCommand::supportedOptions(parser) + QStringList{
+        u"interval"_s,
+        u"samples"_s,
+        u"sample-rate"_s,
+        u"trigger-level"_s,
+        u"trigger-mode"_s,
+        u"window-size"_s,
+    };
+}
+
+/*!
+ * \copybrief DeviceCommand::processOptions
+ *
+ * This implementation extends DeviceCommand::processOptions to process additional CLI options
+ * supported (or required) by this command.
+ */
+QStringList DsoCommand::processOptions(const QCommandLineParser &parser)
+{
+    QStringList errors = DeviceCommand::processOptions(parser);
+    if (!errors.isEmpty()) {
+        return errors;
+    }
+
+    // Parse the (required) mode option.
+    if (const QString mode = parser.value(u"mode"_s).trimmed().toLower();
+        mode.startsWith(u"ac v"_s) || mode.startsWith(u"vac"_s)) {
+        settings.mode = DsoService::Mode::AcVoltage;
+    } else if (mode.startsWith(u"dc v"_s) || mode.startsWith(u"vdc"_s)) {
+        settings.mode = DsoService::Mode::DcVoltage;
+    } else if (mode.startsWith(u"ac c"_s) || mode.startsWith(u"aac"_s)) {
+        settings.mode = DsoService::Mode::AcCurrent;
+    } else if (mode.startsWith(u"dc c"_s) || mode.startsWith(u"adc"_s)) {
+        settings.mode = DsoService::Mode::DcCurrent;
+    } else {
+        errors.append(tr("Unknown DSO mode: %1").arg(parser.value(u"mode"_s)));
+        return errors;
+    }
+
+    // Parse the (required) range option.
+    QString unit;
+    {
+        const QString value = parser.value(u"range"_s);
+        quint32 sensibleMinimum = 0;
+        switch (settings.mode) {
+        case DsoService::Mode::Idle:
+            Q_ASSERT(false); // Not possible, since the mode parsing above never allows Idle.
+            break;
+        case DsoService::Mode::DcVoltage:
+        case DsoService::Mode::AcVoltage:
+            minRangeFunc = minVoltageRange;
+            unit = u"V"_s;
+            sensibleMinimum = 50; // mV.
+            break;
+        case DsoService::Mode::DcCurrent:
+        case DsoService::Mode::AcCurrent:
+            minRangeFunc = minCurrentRange;
+            unit = u"A"_s;
+            sensibleMinimum = 5; // mA.
+            break;
+        }
+        Q_ASSERT(!unit.isEmpty());
+        rangeOptionValue = parseNumber<std::milli>(value, unit, sensibleMinimum);
+        if (rangeOptionValue == 0) {
+            errors.append(tr("Invalid range value: %1").arg(value));
+        }
+    }
+
+    // Parse the trigger-level option.
+    if (parser.isSet(u"trigger-level"_s)) {
+        float sign = 1.0;
+        const QString rawValue = parser.value(u"trigger-level"_s);
+        QString absValue = rawValue;
+        DOKIT_STRING_INDEX_TYPE nonSpacePos;
+        for (nonSpacePos = 0; (nonSpacePos < rawValue.length()) && (rawValue.at(nonSpacePos) == u' '); ++nonSpacePos);
+        if ((nonSpacePos < rawValue.length()) && (rawValue.at(nonSpacePos) == u'-')) {
+            absValue = rawValue.mid(nonSpacePos+1);
+            sign = -1.0;
+        }
+        const float level = parseNumber<std::ratio<1>,float>(absValue, unit, 0.f);
+        qCDebug(lc) << "Trigger level" << rawValue << absValue << nonSpacePos << sign << level;
+        if (qIsNaN(level)) {
+            errors.append(tr("Invalid trigger-level value: %1").arg(rawValue));
+        } else {
+            settings.triggerLevel = sign * level;
+            qCDebug(lc) << "Trigger level" << settings.triggerLevel;
+            // Check the trigger level is within the Votage / Current range.
+            if ((rangeOptionValue != 0) && (qAbs(settings.triggerLevel) > (rangeOptionValue/1000.0))) {
+                errors.append(tr("Trigger-level %1%2 is outside range ±%3%2").arg(
+                    appendSiPrefix(settings.triggerLevel), unit, appendSiPrefix(rangeOptionValue / 1000.0)));
+            }
+        }
+    }
+
+    // Parse the trigger-mode option.
+    if (parser.isSet(u"trigger-mode"_s)) {
+        const QString triggerMode = parser.value(u"trigger-mode"_s).trimmed().toLower();
+        if (triggerMode.startsWith(u"free"_s)) {
+            settings.command = DsoService::Command::FreeRunning;
+        } else if (triggerMode.startsWith(u"ris"_s)) {
+           settings.command = DsoService::Command::RisingEdgeTrigger;
+        } else if (triggerMode.startsWith(u"fall"_s)) {
+            settings.command = DsoService::Command::FallingEdgeTrigger;
+        } else {
+            errors.append(tr("Unknown trigger mode: %1").arg(parser.value(u"trigger-mode"_s)));
+        }
+    }
+
+    // Ensure that if either trigger option is present, then both are.
+    if (parser.isSet(u"trigger-level"_s) != parser.isSet(u"trigger-mode"_s)) {
+        errors.append(tr("If either option is provided, then both must be: trigger-level, trigger-mode"));
+    }
+
+    // Parse the sample-rate option.
+    if (parser.isSet(u"sample-rate"_s)) {
+        const QString value = parser.value(u"sample-rate"_s);
+        sampleRateValue = parseNumber<std::ratio<1,1>>(value, u"Hz"_s, (quint32)50'000);
+        if (sampleRateValue == 0) {
+            errors.append(tr("Invalid sample-rate value: %1").arg(value));
+        } else if (sampleRateValue > 1'000'000) {
+            qCWarning(lc).noquote() << tr("Pokit devices do not officially support sample rates greater than 1Mhz");
+        }
+    }
+
+    // Parse the interval option.
+    if (parser.isSet(u"interval"_s)) {
+        const QString value = parser.value(u"interval"_s);
+        const quint32 interval = parseNumber<std::micro>(value, u"s"_s, (quint32)500'000);
+        if (interval == 0) {
+            errors.append(tr("Invalid interval value: %1").arg(value));
+        } else {
+            settings.samplingWindow = interval;
+        }
+    }
+
+    // Parse the window-size option.
+    if (parser.isSet(u"window-size"_s)) {
+        const QString value = parser.value(u"window-size"_s);
+        const quint32 samples = parseNumber<std::ratio<1>>(value, u"S"_s);
+        if (samples == 0) {
+            errors.append(tr("Invalid window-size value: %1").arg(value));
+        } else if (samples > std::numeric_limits<quint16>::max()) {
+            errors.append(tr("Window size value (%1) must be no greater than %2")
+                .arg(value).arg(std::numeric_limits<quint16>::max()));
+        } else {
+            settings.numberOfSamples = (quint16)samples;
+            if (const auto maxSamples = maxWindowSize(PokitProduct::PokitPro); settings.numberOfSamples > maxSamples) {
+                qCWarning(lc).noquote() <<
+                    tr("No Pokit device officially supports windows greater than %L1 samples").arg(maxSamples);
+            }
+        }
+    }
+
+    // Ensure that we have at least: sample-rate, or both interval and window-size.
+    if ((!parser.isSet(u"sample-rate"_s)) && !(parser.isSet(u"interval"_s) && parser.isSet(u"window-size"_s))) {
+        errors.append(tr("Missing required option/s: either sample-rate, or both interval and window-size"));
+    }
+
+    // If we have all three sample-rate related options, ensure they agree.
+    if ((sampleRateValue != 0) && (settings.numberOfSamples != 0) && (settings.samplingWindow != 0)) {
+        const quint32 sampleRate = settings.numberOfSamples * 1'000'000ull / settings.samplingWindow;
+        if (sampleRate != sampleRateValue) {
+            errors.append(tr("Windows size (%1 samples) and interval (%2ns) yield a sample rate of %3Hz, which does "
+                "not match the supplied sample-rate (%4Hz). Tip: leave one option unset to have dokit calculate the "
+                "remaining option.").arg(settings.numberOfSamples).arg(settings.samplingWindow).arg(sampleRate)
+                .arg(sampleRateValue));
+        }
+    }
+
+    // Parse the samples option.
+    if (parser.isSet(u"samples"_s)) {
+        const QString value = parser.value(u"samples"_s);
+        samplesValue = parseNumber<std::ratio<1>>(value, u"S"_s);
+        if (samplesValue == 0) {
+            errors.append(tr("Invalid samples value: %1").arg(value));
+        }
+    }
+    return errors;
+}
+
+/*!
+ * \copybrief DeviceCommand::getService
+ *
+ * This override returns a pointer to a DsoService object.
+ */
+AbstractPokitService * DsoCommand::getService()
+{
+    Q_ASSERT(device);
+    if (!service) {
+        service = device->dso();
+        Q_ASSERT(service);
+        connect(service, &DsoService::metadataRead,    this, &DsoCommand::metadataRead);
+        connect(service, &DsoService::samplesRead,     this, &DsoCommand::outputSamples);
+        connect(service, &DsoService::settingsWritten, this, &DsoCommand::settingsWritten);
+    }
+    return service;
+}
+
+/*!
+ * Returns the \a product's maximum sampling window size.
+ *
+ * \pokitApi Pokit's official documentation claim the maximum is 8,192. However, my Pokit Meter fails for window size
+ * greater than 8,191, while my Pokit Pro supports up to 16,384 samples per window.
+ */
+quint16 DsoCommand::maxWindowSize(const PokitProduct product)
+{
+    switch (product) {
+    case PokitProduct::PokitMeter:
+        return 8'191;
+    case PokitProduct::PokitPro:
+        return 16'384;
+    }
+    Q_ASSERT_X(false, "DsoCommand::maxWindowSize", "Unknown PokitProduct enum value");
+    return 0;
+}
+
+/*!
+ * Configures the \a settings.numberOfSamples and/or \a settings.samplingWindow, if not already set, according to the
+ * requested \a sampleRate. The chosen \a settings will be limited to \a product's capaibilities.
+ *
+ * Returns \c true os settings were set (either by this function, or they were already set), or \c false if the
+ * settings could not be determined succesfully (eg, because \a sampleRate was too high for the \a product).
+ */
+bool DsoCommand::configureWindow(const PokitProduct product, const quint32 sampleRate, DsoService::Settings &settings)
+{
+    const quint32 maxSampleRate = 1'000'000; // Pokit Meter and Pokit Pro both sample up to 1MHz.
+    const quint32 maxWindowSize = DsoCommand::maxWindowSize(product);
+
+    if (sampleRate > maxSampleRate) {
+        qCWarning(lc).noquote() <<
+            tr("The requested sample rate (%1Hz) likely exceeds the connected device's limit (%2Hz)")
+            .arg(sampleRate).arg(maxSampleRate);
+    }
+
+    if (settings.numberOfSamples > maxWindowSize) {
+        qCWarning(lc).noquote() <<
+            tr("Requested window size (%1 samples) likely exceeds the connected device's limit (%2) samples")
+            .arg(settings.samplingWindow).arg(maxWindowSize);
+    }
+
+    if ((settings.numberOfSamples != 0) && (settings.samplingWindow != 0)) {
+        qCDebug(lc).noquote() << "Both numberOfSamples and samplingWindow are set, so no need to derive either";
+        if (sampleRate != 0) {
+            const quint32 derivedRate = settings.numberOfSamples * 1'000'000ull / settings.samplingWindow;
+            qCDebug(lc).noquote() << "derivedRate" << derivedRate << sampleRate;
+            if (sampleRate != derivedRate) {
+                qCWarning(lc).noquote() << tr("Ignoring sample-rate, as interval and window-size both provided");
+            }
+        }
+        return true; // Nothing more to do.
+    }
+    Q_ASSERT_X(sampleRate > 0, "DsoCommand::configureWindow", "processOptions should have rejected already");
+
+    // If both window parameters are unset, choose the best window size (we'll choose a window period later).
+    if ((settings.numberOfSamples == 0) && (settings.samplingWindow == 0)) {
+        qCDebug(lc).noquote() << tr("Choosing best number-of-samples for sample-rate %2Hz").arg(sampleRate);
+        double smallestDifference = std::numeric_limits<double>::quiet_NaN();
+        for (quint32 windowSize = maxWindowSize; windowSize > 0; --windowSize) {
+            const quint32 period = windowSize * 1'000'000ull / sampleRate;
+            const double effectiveRate = double(windowSize) * 1'000'000.0 / (double)period;
+            if (effectiveRate > maxSampleRate) continue; // Skip sizes that would exceed the device's max sample rate.
+            if (const quint32 effectivePeriod = windowSize * 1'000'000ull / sampleRate;
+                effectivePeriod > 1'000'000) continue; // Skip sizes that would take longer than 1s to fetch.
+            const double difference = qAbs(effectiveRate - sampleRate);
+            // qCDebug(lc).noquote() << tr("%1 samples, %2us, %3Hz, %4Hz, ±%5Hz").arg(windowSize).arg(period)
+            //     .arg(effectiveRate, 0, 'f').arg(sampleRate).arg(difference, 0, 'f');
+            if ((settings.numberOfSamples == 0) || (difference < smallestDifference)) {
+                settings.numberOfSamples = windowSize;
+                smallestDifference = difference;
+            }
+        }
+        qCDebug(lc).noquote() << tr("Chose %Ln sample/s, with error ±%2Hz", nullptr,
+            settings.numberOfSamples).arg(smallestDifference, 0, 'f');
+        if (settings.numberOfSamples == 0) {
+            qCCritical(lc).noquote() << tr("Failed to select a compatible window size for sample rate %1Hz").arg(sampleRate);
+            return false;
+        }
+    }
+
+    if (settings.numberOfSamples == 0) {
+        qCDebug(lc).noquote() << tr("Calculating number-of-samples for %1us window at %2Hz")
+            .arg(settings.samplingWindow).arg(sampleRate);
+        Q_ASSERT(settings.samplingWindow != 0);
+        const auto numberOfSamples = sampleRate * settings.samplingWindow / 1'000'000ull;
+        qCDebug(lc).noquote() << tr("Calculated %Ln sample/s", nullptr, numberOfSamples);
+        if ((numberOfSamples == 0) || (numberOfSamples > maxWindowSize)) {
+            qCCritical(lc).noquote() << tr("Failed to calculate a valid number of samples for a %L1us period at %2Hz")
+                .arg(settings.samplingWindow).arg(sampleRate);
+            return false;
+        }
+        settings.numberOfSamples = numberOfSamples; // Note the implicit uint64 to uint16 conversion.
+        Q_ASSERT(settings.numberOfSamples * 1'000'000ull / settings.samplingWindow <= sampleRate); // Due to integer truncation.
+    }
+
+    if (settings.samplingWindow == 0) {
+        qCDebug(lc).noquote() << tr("Calculating sampling-window for %Ln sample/s at %1Hz", nullptr,
+            settings.numberOfSamples).arg(sampleRate);
+        Q_ASSERT(settings.numberOfSamples != 0);
+        settings.samplingWindow = settings.numberOfSamples * 1'000'000ull / sampleRate;
+        qCDebug(lc).noquote() << tr("Calculated %1us").arg(settings.samplingWindow);
+        if (settings.samplingWindow == 0) {
+            qCCritical(lc).noquote() << tr("Failed to calculate a valid sampling window for a %L1 samples at %1Hz")
+            .arg(settings.numberOfSamples).arg(sampleRate);
+            return false;
+        }
+    }
+    return true;
+}
+
+/*!
+ * \copybrief DeviceCommand::serviceDetailsDiscovered
+ *
+ * This override fetches the current device's status, and outputs it in the selected format.
+ */
+void DsoCommand::serviceDetailsDiscovered()
+{
+    DeviceCommand::serviceDetailsDiscovered(); // Just logs consistently.
+    settings.range = (minRangeFunc == nullptr) ? 0 : minRangeFunc(*service->pokitProduct(), rangeOptionValue);
+    if (!configureWindow(*service->pokitProduct(), sampleRateValue, settings)) {
+        disconnect(EXIT_FAILURE);
+        return;
+    }
+    if (samplesValue == 0) samplesValue = settings.numberOfSamples;
+    const QString range = service->toString(settings.range, settings.mode);
+    const QString triggerInfo = (settings.command == DsoService::Command::FreeRunning) ? QString() :
+        tr(", and a %1 at %2%3%4 (%5Hz)").arg(DsoService::toString(settings.command).toLower(),
+            (settings.triggerLevel < 0.) ? u"-"_s : u""_s, appendSiPrefix(qAbs(settings.triggerLevel)),
+            range.at(range.size()-1));
+    qCInfo(lc).noquote() << tr("Sampling %1, with range %2, at %L3Hz (%Ln sample/s over %L4us)%5", nullptr, settings.numberOfSamples)
+        .arg(DsoService::toString(settings.mode), (range.isNull()) ? QString::fromLatin1("N/A") : range)
+        .arg(settings.numberOfSamples * 1'000'000ull / settings.samplingWindow).arg(settings.samplingWindow)
+        .arg(triggerInfo);
+    if (!service->enableMetadataNotifications()) {
+        qCCritical(lc).noquote() << tr("Failed to enable metadata notifications");
+        disconnect(EXIT_FAILURE);
+        return;
+    }
+    if (!service->enableReadingNotifications()) {
+        qCCritical(lc).noquote() << tr("Failed to enable reading notifications");
+        disconnect(EXIT_FAILURE);
+        return;
+    }
+    service->setSettings(settings);
+}
+
+/*!
+ * \var DsoCommand::minRangeFunc
+ *
+ * Pointer to function for converting #rangeOptionValue to a Pokit device's range enumerator. This function pointer
+ * is assigned during the command line parsing, but is not invoked until after the device's services are discovered,
+ * because prior to that discovery, we don't know which product (Meter vs Pro vs Clamp, etc) we're talking to and thus
+ * which enumerator list to be using.
+ *
+ * If the current mode does not support ranges (eg diode, and continuity modes), then this member will be \c nullptr.
+ *
+ * \see processOptions
+ * \see serviceDetailsDiscovered
+ */
+
+/*!
+ * Invoked when the DSO settings have been written.
+ */
+void DsoCommand::settingsWritten()
+{
+    Q_ASSERT(service);
+    qCDebug(lc).noquote() << tr("Settings written; DSO has started.");
+}
+
+/*!
+ * Invoked when \a metadata has been received from the DSO.
+ */
+void DsoCommand::metadataRead(const DsoService::Metadata &data)
+{
+    qCDebug(lc) << "status:" << (int)(data.status);
+    qCDebug(lc) << "scale:" << data.scale;
+    qCDebug(lc) << "mode:" << DsoService::toString(data.mode);
+    qCDebug(lc) << "range:" << service->toString(data.range, data.mode);
+    qCDebug(lc) << "samplingWindow:" << data.samplingWindow;
+    qCDebug(lc) << "numberOfSamples:" << data.numberOfSamples;
+    qCDebug(lc) << "samplingRate:" << data.samplingRate << "Hz";
+    this->metadata = data;
+    this->samplesToGo = data.numberOfSamples;
+}
+
+/*!
+ * Outputs DSO \a samples in the selected output format.
+ */
+void DsoCommand::outputSamples(const DsoService::Samples &samples)
+{
+    QString unit;
+    switch (metadata.mode) {
+    case DsoService::Mode::DcVoltage: unit = u"Vdc"_s; break;
+    case DsoService::Mode::AcVoltage: unit = u"Vac"_s; break;
+    case DsoService::Mode::DcCurrent: unit = u"Adc"_s; break;
+    case DsoService::Mode::AcCurrent: unit = u"Aac"_s; break;
+    default:
+        qCDebug(lc).noquote() << tr(R"(No known unit for mode %1 "%2".)").arg((int)metadata.mode)
+            .arg(DsoService::toString(metadata.mode));
+    }
+    const QString range = service->toString(metadata.range, metadata.mode);
+
+    for (const qint16 &sample: samples) {
+        static quint32 sampleNumber = 0; ++sampleNumber;
+        const float value = sample * metadata.scale;
+        switch (format) {
+        case OutputFormat::Csv:
+            for (; showCsvHeader; showCsvHeader = false) {
+                std::cout << qUtf8Printable(tr("sample_number,value,unit,range\n"));
+            }
+            std::cout << qUtf8Printable(QString::fromLatin1("%1,%2,%3,%4\n")
+                .arg(sampleNumber).arg(value).arg(unit, range));
+            break;
+        case OutputFormat::Json:
+            std::cout << QJsonDocument(QJsonObject{
+                    { u"value"_s,  value },
+                    { u"unit"_s,   unit },
+                    { u"range"_s,  range },
+                    { u"mode"_s,   DsoService::toString(metadata.mode) },
+                }).toJson().toStdString();
+            break;
+        case OutputFormat::Text:
+            std::cout << qUtf8Printable(tr("%1 %2 %3\n").arg(sampleNumber).arg(value).arg(unit));
+            break;
+        }
+        --samplesToGo;
+
+        if ((sampleNumber > samplesValue) && (samplesValue != 0)) {
+            qCInfo(lc).noquote() << tr("Finished fetching %Ln sample/s. Disconnecting.", nullptr, sampleNumber);
+            if (device) disconnect(); // Will exit the application once disconnected.
+            return;
+        }
+    }
+
+    // If we've received all the data for the current window, begin fetching another.
+    if (samplesToGo <= 0) {
+        qCDebug(lc).noquote() << tr("Finished fetching %Ln window sample/s (with %L2 to remaining).",
+            nullptr, metadata.numberOfSamples).arg(samplesToGo);
+        if (settings.range != +PokitMeter::VoltageRange::AutoRange) service->setSettings(settings);
+    }
+}

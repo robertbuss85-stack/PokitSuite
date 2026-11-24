@@ -1,0 +1,13 @@
+mode,value,unit,status,range
+Idle,0.000000,,,
+DC voltage,1.000000,Vdc,Auto Range On,Up to 2V
+AC voltage,-1.000000,Vac,Auto Range Off,Up to 2V
+DC current,0.500000,Adc,Auto Range On,Up to 150mA
+AC current,0.100000,Aac,Auto Range Off,Up to 2A
+Resistance,123.400002,Ω,Auto Range Off,Up to 10KΩ
+Diode,576.890015,,Ok,
+Continuity,0.000000,,Continuity,
+Continuity,0.000000,,No continuity,
+Temperature,32.000000,°C,Ok,
+Capacitance,0.000500,F,Auto Range Off,
+Idle,0.000000,,Error,

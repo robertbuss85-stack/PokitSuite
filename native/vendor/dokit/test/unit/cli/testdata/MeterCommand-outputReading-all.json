@@ -1,0 +1,72 @@
+{
+    "mode": "Idle",
+    "status": "",
+    "value": 0
+}
+{
+    "mode": "DC voltage",
+    "range": "Up to 2V",
+    "status": "Auto Range On",
+    "unit": "Vdc",
+    "value": 1
+}
+{
+    "mode": "AC voltage",
+    "range": "Up to 2V",
+    "status": "Auto Range Off",
+    "unit": "Vac",
+    "value": -1
+}
+{
+    "mode": "DC current",
+    "range": "Up to 150mA",
+    "status": "Auto Range On",
+    "unit": "Adc",
+    "value": 0.5
+}
+{
+    "mode": "AC current",
+    "range": "Up to 2A",
+    "status": "Auto Range Off",
+    "unit": "Aac",
+    "value": 0.10000000149011612
+}
+{
+    "mode": "Resistance",
+    "range": "Up to 10KΩ",
+    "status": "Auto Range Off",
+    "unit": "Ω",
+    "value": 123.4000015258789
+}
+{
+    "mode": "Diode",
+    "status": "Ok",
+    "value": 576.8900146484375
+}
+{
+    "mode": "Continuity",
+    "status": "Continuity",
+    "value": 0
+}
+{
+    "mode": "Continuity",
+    "status": "No continuity",
+    "value": 0
+}
+{
+    "mode": "Temperature",
+    "status": "Ok",
+    "unit": "°C",
+    "value": 32
+}
+{
+    "mode": "Capacitance",
+    "status": "Auto Range Off",
+    "unit": "F",
+    "value": 0.0005000000237487257
+}
+{
+    "mode": "Idle",
+    "status": "Error",
+    "value": 0
+}
