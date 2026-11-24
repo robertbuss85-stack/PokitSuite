@@ -4,7 +4,7 @@
 [![Pages](https://github.com/robertbuss85-stack/PokitSuite/actions/workflows/pages.yml/badge.svg)](https://github.com/robertbuss85-stack/PokitSuite/actions/workflows/pages.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 
-PokitSuite is a native Windows measurement application for Pokit Pro Bluetooth instruments. It combines a live digital multimeter, a Tektronix TDS 220-inspired digital storage oscilloscope, signal metrics, and an MCP interface for AI-assisted measurement and Arduino workflows.
+PokitSuite is a native Windows measurement application for Pokit Pro Bluetooth instruments. It combines a live digital multimeter,  digital storage oscilloscope, signal metrics, and an MCP interface for AI-assisted measurement and Arduino workflows.
 
 > PokitSuite was developed with substantial assistance from **OpenAI Codex**, directed and tested against real Pokit Pro hardware by the project owner.
 
