@@ -6,6 +6,8 @@
 
 PokitSuite is a native Windows measurement application for Pokit Pro Bluetooth instruments. It combines a live digital multimeter,  digital storage oscilloscope, signal metrics, and an MCP interface for AI-assisted measurement and Arduino workflows.
 
+**Technology:** The supported desktop application is written in **C++17 with Qt/QML**. Python is used only for the companion MCP server and the retained experimental legacy web fallback.
+
 > PokitSuite was developed with substantial assistance from **OpenAI Codex**, directed and tested against real Pokit Pro hardware by the project owner.
 
 [Website](https://robertbuss85-stack.github.io/PokitSuite/) · [Download](https://github.com/robertbuss85-stack/PokitSuite/releases/latest) · [German documentation](docs/README.de.md) · [MCP guide](docs/MCP.md)

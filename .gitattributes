@@ -1,0 +1,5 @@
+# The supported product is the native C++/Qt application. These retained
+# legacy web-fallback files must not determine GitHub's primary language.
+/PokitSuite.py linguist-detectable=false
+/PokitSuite.html linguist-detectable=false
+
