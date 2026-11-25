@@ -8,8 +8,60 @@ ApplicationWindow {
     visible: true; title: "PokitSuite"; color: "#111820"
     property color panel: "#17212b"
     property color line: "#34424d"
-    property color ch1: "#ffd629"
-    property color ch2: "#55dff5"
+    property color ch1: pokit.deviceColor || "#ffd629"
+    property color ch2: pokit.deviceColor2 || "#55dff5"
+    property bool showDevices: false
+    readonly property var meterModes: [
+        {label:"Spannung DC", key:"DC Voltage"}, {label:"Spannung AC", key:"AC Voltage"},
+        {label:"Strom DC (mA / A)", key:"DC Current"}, {label:"Strom AC (mA / A)", key:"AC Current"},
+        {label:"Widerstand", key:"Resistance"}, {label:"Diode", key:"Diode"},
+        {label:"Kapazität", key:"Capacitance"}, {label:"Durchgang", key:"Continuity"}
+    ]
+
+    component MeterModeBox: ComboBox {
+        required property int channel
+        model: root.meterModes
+        textRole: "label"
+        valueRole: "key"
+        onActivated: pokit.setMeterMode(channel, currentValue)
+    }
+
+    function meterText(value, unit, valid) {
+        if (!valid) return "—"
+        if (unit === "Durchgang") return value ? "Geschlossen" : "Offen"
+        return Number(unit === "F" ? value * 1e6 : value).toLocaleString(Qt.locale("de_DE"), 'f', 4)
+    }
+
+    component MeterReadout: Item {
+        required property real reading
+        required property string unit
+        required property bool valid
+        required property bool overrange
+        Layout.fillWidth: true
+        Layout.preferredHeight: 86
+        implicitWidth: 320
+        Label {
+            anchors { left: parent.left; right: parent.right; top: parent.top }
+            height: 60
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            text: parent.overrange ? "OL" : root.meterText(parent.reading, parent.unit, parent.valid)
+            color: "#edf6fb"
+            font.family: "Consolas"
+            font.pixelSize: 48
+            elide: Text.ElideRight
+        }
+        Label {
+            anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+            height: 24
+            horizontalAlignment: Text.AlignHCenter
+            text: parent.unit === "F" ? "µF" : parent.unit
+            color: "#93a9b8"
+            font.pixelSize: 18
+        }
+    }
+    readonly property var deviceColorNames: ["Rot", "Lichtgrau", "Gelb", "Grün"]
+    readonly property var deviceColors: ["#ff6666", "#d3d3d3", "#ffd629", "#55df89"]
     property color reference: "#b78cff"
     property real voltsDiv: 1.0
     property int timeDivUs: 10000
@@ -37,8 +89,9 @@ ApplicationWindow {
 
     ColumnLayout { anchors.fill:parent;anchors.margins:12;spacing:8
         RowLayout { Layout.fillWidth:true;spacing:6
-            Button { text:"Multimeter";highlighted:pokit.activeFeature==="meter";onClicked:pokit.showMultimeter() }
-            Button { text:"Oszilloskop";highlighted:pokit.activeFeature==="scope";onClicked:pokit.showScope() }
+            Button { text:"Geräte";highlighted:root.showDevices;onClicked:root.showDevices=true }
+            Button { text:"Multimeter";highlighted:!root.showDevices&&pokit.activeFeature==="meter";onClicked:{root.showDevices=false;pokit.showMultimeter()} }
+            Button { text:"Oszilloskop";highlighted:!root.showDevices&&pokit.activeFeature==="scope";onClicked:{root.showDevices=false;pokit.showScope()} }
             Item { Layout.fillWidth:true }
             Label { visible:pokit.activeFeature==="scope";text:"Vpp  "+pokit.scopeVpp.toFixed(3)+" V";color:root.ch1;font.bold:true }
             Label { visible:pokit.activeFeature==="scope";text:"f  "+(pokit.scopeFrequency>0?(pokit.scopeFrequency>=1000?(pokit.scopeFrequency/1000).toFixed(2)+" kHz":pokit.scopeFrequency.toFixed(1)+" Hz"):"—");color:"#dce5e9" }
@@ -48,34 +101,48 @@ ApplicationWindow {
             Label { visible:pokit.activeFeature==="scope";text:"Min/Max  "+pokit.scopeMinimum.toFixed(2)+" / "+pokit.scopeMaximum.toFixed(2)+" V";color:"#dce5e9" }
             Label { visible:pokit.activeFeature==="scope"&&pokit.connected2;text:"CH2  "+pokit.scopeVpp2.toFixed(3)+" Vpp · "+(pokit.scopeFrequency2>0?pokit.scopeFrequency2.toFixed(1)+" Hz":"—");color:root.ch2;font.bold:true }
         }
-        StackLayout { currentIndex:pokit.activeFeature==="meter"?0:1;Layout.fillWidth:true;Layout.fillHeight:true
+        StackLayout { currentIndex:root.showDevices?2:(pokit.activeFeature==="meter"?0:1);Layout.fillWidth:true;Layout.fillHeight:true
             Rectangle { color:root.panel;radius:12;border.color:root.line
                 ColumnLayout { anchors.fill:parent;anchors.margins:24
                     RowLayout { Layout.fillWidth:true
                         Label { text:"LIVE-MULTIMETER";color:"#8ba0af";Layout.fillWidth:true }
-                        ComboBox { model:["DC Voltage","AC Voltage","DC Current","AC Current"];onActivated:pokit.setMeterMode(currentText) }
                         ComboBox { model:["0,5 s","1 s","2 s"];onActivated:pokit.setMeterInterval([500,1000,2000][currentIndex]) }
                     }
                     RowLayout { Layout.fillWidth:true;spacing:28
                         ColumnLayout { Layout.fillWidth:true
                             Label { text:"CH1 · "+pokit.deviceName;color:root.ch1;font.bold:true;Layout.alignment:Qt.AlignHCenter }
-                            Row { Layout.alignment:Qt.AlignHCenter;spacing:12
-                                Label { text:Number(pokit.meterValue).toLocaleString(Qt.locale("de_DE"),'f',4);color:"#edf6fb";font.pixelSize:64 }
-                                Label { text:pokit.meterUnit;color:"#93a9b8";font.pixelSize:22;anchors.baseline:parent.children[0].baseline }
+                            Label { text:pokit.meterSwitch;color:"#93a9b8";Layout.alignment:Qt.AlignHCenter }
+                            MeterModeBox { channel:1; Layout.alignment:Qt.AlignHCenter }
+                            MeterReadout {
+                                reading: pokit.meterValue; unit: pokit.meterUnit
+                                valid: pokit.connected && pokit.meterValid
+                                overrange: pokit.connected && pokit.meterOverrange
                             }
                         }
-                        Rectangle { Layout.preferredWidth:1;Layout.fillHeight:true;color:root.line;visible:pokit.connected2 }
-                        ColumnLayout { Layout.fillWidth:true;visible:pokit.connected2
+                        Rectangle { Layout.preferredWidth:1;Layout.fillHeight:true;color:root.line }
+                        ColumnLayout { Layout.fillWidth:true
                             Label { text:"CH2 · "+pokit.deviceName2;color:root.ch2;font.bold:true;Layout.alignment:Qt.AlignHCenter }
-                            Row { Layout.alignment:Qt.AlignHCenter;spacing:12
-                                Label { text:Number(pokit.meterValue2).toLocaleString(Qt.locale("de_DE"),'f',4);color:"#edf6fb";font.pixelSize:64 }
-                                Label { text:pokit.meterUnit;color:"#93a9b8";font.pixelSize:22;anchors.baseline:parent.children[0].baseline }
+                            Label { text:pokit.meterSwitch2;color:"#93a9b8";Layout.alignment:Qt.AlignHCenter }
+                            MeterModeBox { channel:2; Layout.alignment:Qt.AlignHCenter }
+                            MeterReadout {
+                                reading: pokit.meterValue2; unit: pokit.meterUnit2
+                                valid: pokit.connected2 && pokit.meterValid2
+                                overrange: pokit.connected2 && pokit.meterOverrange2
                             }
                         }
                     }
                     Canvas { id:meterCanvas;Layout.fillWidth:true;Layout.fillHeight:true
+                        visible: !pokit.connected || !pokit.connected2 || pokit.meterUnit === pokit.meterUnit2
                         Connections { target:pokit;function onMeterHistoryChanged(){meterCanvas.requestPaint()} }
+                        Connections { target:root;function onCh1Changed(){meterCanvas.requestPaint()} function onCh2Changed(){meterCanvas.requestPaint()} }
                         onPaint:{let c=getContext("2d"),a=pokit.meterHistory,b=pokit.meterHistory2;c.reset();c.strokeStyle="#2a3e4b";for(let i=0;i<5;i++){let y=i*height/4;c.beginPath();c.moveTo(0,y);c.lineTo(width,y);c.stroke()}let all=a.concat(b);if(all.length<2)return;let lo=Math.min(...all),hi=Math.max(...all);if(lo===hi){lo--;hi++}function trace(v,color){if(v.length<2)return;c.strokeStyle=color;c.lineWidth=2;c.beginPath();for(let j=0;j<v.length;j++){let x=j*width/(v.length-1),y=(hi-v[j])*height/(hi-lo);j?c.lineTo(x,y):c.moveTo(x,y)}c.stroke()}trace(a,root.ch1);trace(b,root.ch2)}
+                    }
+                    Label {
+                        visible: !meterCanvas.visible && pokit.connected && pokit.connected2
+                                 && pokit.meterUnit !== pokit.meterUnit2
+                        text: "Der gemeinsame Verlauf benötigt dieselbe Einheit auf beiden Kanälen."
+                        color: "#93a9b8"
+                        Layout.alignment: Qt.AlignHCenter
                     }
                 }
             }
@@ -94,6 +161,7 @@ ApplicationWindow {
                                     function onScopeSamplesChanged(){scopeCanvas.requestPaint()}
                                     function onReferenceChanged(){scopeCanvas.requestPaint()}
                                 }
+                                Connections { target:root;function onCh1Changed(){scopeCanvas.requestPaint()} function onCh2Changed(){scopeCanvas.requestPaint()} }
                                 onWidthChanged:requestPaint();onHeightChanged:requestPaint()
                                 onPaint:{
                                     let c=getContext("2d"),a=pokit.scopeSamples,b=pokit.scopeSamples2;c.reset();c.fillStyle="#07100b";c.fillRect(0,0,width,height);c.strokeStyle="#294a34";c.lineWidth=1
@@ -167,6 +235,69 @@ ApplicationWindow {
                                 RowLayout { Layout.fillWidth:true
                                     Button { text:pokit.scopeRunning?"STOP":"RUN";Layout.fillWidth:true;onClicked:pokit.setScopeRunning(!pokit.scopeRunning) }
                                     Button { text:"SINGLE";Layout.fillWidth:true;onClicked:pokit.scopeSingle() }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                color: root.panel; radius: 12; border.color: root.line
+                ColumnLayout {
+                    anchors.fill: parent; anchors.margins: 24; spacing: 14
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { text: "Pokit-Geräte"; color: "white"; font.pixelSize: 22; Layout.fillWidth: true }
+                        Button { text: "Geräte suchen"; onClicked: pokit.connectDevice() }
+                    }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#9eb0bd"
+                        text: "Wähle eine Farbe und speichere sie für dieses Gerät. Die Farbe erscheint auch im Multimeter und Oszilloskop."
+                    }
+                    Label {
+                        visible: pokit.devices.length === 0; color: "#9eb0bd"
+                        text: "Noch keine Pokits gefunden oder gespeichert."
+                    }
+                    ListView {
+                        id: deviceList
+                        Layout.fillWidth: true; Layout.fillHeight: true; spacing: 8; clip: true
+                        model: pokit.devices
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: Rectangle {
+                            id: deviceCard
+                            required property var modelData
+                            width: deviceList.width; height: deviceRow.implicitHeight + 24
+                            color: "#111a22"; radius: 8; border.color: root.line
+                            RowLayout {
+                                id: deviceRow
+                                anchors.fill: parent; anchors.margins: 12; spacing: 14
+                                Rectangle {
+                                    Layout.preferredWidth: 14; Layout.preferredHeight: 14; radius: 7
+                                    color: root.deviceColors[colorBox.currentIndex] || "#70828e"
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true; spacing: 2
+                                    Label {
+                                        Layout.fillWidth: true; elide: Text.ElideRight; color: "white"; font.bold: true
+                                        text: (deviceCard.modelData.channel ? "CH" + deviceCard.modelData.channel + " · " : "") + deviceCard.modelData.name
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true; elide: Text.ElideRight; color: "#9eb0bd"
+                                        text: deviceCard.modelData.id + " · " + (deviceCard.modelData.connected ? "Verbunden" : "Offline")
+                                              + (deviceCard.modelData.saved ? " · Gespeichert" : "")
+                                    }
+                                }
+                                ComboBox {
+                                    id: colorBox
+                                    Accessible.name: "Gerätefarbe"
+                                    model: root.deviceColorNames
+                                    currentIndex: root.deviceColors.indexOf(deviceCard.modelData.color || "")
+                                    displayText: currentIndex < 0 ? "Farbe wählen" : currentText
+                                }
+                                Button {
+                                    text: "Speichern"
+                                    enabled: colorBox.currentIndex >= 0
+                                    onClicked: pokit.saveDeviceColor(deviceCard.modelData.id, root.deviceColors[colorBox.currentIndex])
                                 }
                             }
                         }

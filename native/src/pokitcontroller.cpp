@@ -25,6 +25,7 @@
 #include <QPdfWriter>
 #include <QPen>
 #include <QSaveFile>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QUrl>
@@ -33,29 +34,51 @@
 
 static QString deviceKey(const QBluetoothDeviceInfo &info)
 {
-    const QString uuid = info.deviceUuid().toString(QUuid::WithoutBraces);
-    if (!uuid.isEmpty()) return uuid;
-    const QString address = info.address().toString();
-    if (!address.isEmpty() && address != QStringLiteral("00:00:00:00:00:00")) return address;
-    return info.name() + QStringLiteral("|") + QString::number(info.rssi());
+    if (!info.deviceUuid().isNull())
+        return info.deviceUuid().toString(QUuid::WithoutBraces);
+    if (!info.address().isNull()) return info.address().toString();
+    return {};
 }
 
 PokitController::PokitController(QObject *parent) : QObject(parent)
 {
+    m_savedDevices = QSettings(QStringLiteral("PokitSuite"), QStringLiteral("PokitSuite"))
+                         .value(QStringLiteral("devices")).toMap();
+    m_savedDevices.remove(QUuid{}.toString(QUuid::WithoutBraces));
+    connect(this, &PokitController::deviceChanged, this, &PokitController::devicesChanged);
+    connect(this, &PokitController::connectedChanged, this, &PokitController::devicesChanged);
     m_discovery = new PokitDiscoveryAgent(this);
-    m_discovery->setLowEnergyDiscoveryTimeout(6000);
+    m_discovery->setLowEnergyDiscoveryTimeout(12000);
     connect(m_discovery, &PokitDiscoveryAgent::pokitDeviceDiscovered,
             this, &PokitController::attachDevice);
+    connect(m_discovery, &PokitDiscoveryAgent::pokitDeviceUpdated, this,
+            [this](const QBluetoothDeviceInfo &info, QBluetoothDeviceInfo::Fields) { attachDevice(info); });
+    const auto checkName = [this](const QBluetoothDeviceInfo &info) {
+        if (!(info.coreConfigurations() & QBluetoothDeviceInfo::LowEnergyCoreConfiguration)) return;
+        const QString name = info.name().simplified().remove(u' ').toLower();
+        if (name == QStringLiteral("pokitpro") || name == QStringLiteral("pokitmeter"))
+            attachDevice(info);
+    };
+    connect(m_discovery, &QBluetoothDeviceDiscoveryAgent::deviceDiscovered, this, checkName);
+    connect(m_discovery, &QBluetoothDeviceDiscoveryAgent::deviceUpdated, this, checkName);
+    m_scanRetry.setSingleShot(true);
+    m_scanRetry.setInterval(4000);
+    connect(&m_scanRetry, &QTimer::timeout, this, &PokitController::connectDevice);
+    connect(m_discovery, &QBluetoothDeviceDiscoveryAgent::errorOccurred, this, [this] {
+        qWarning().noquote() << "PokitSuite: BLE-Suche:" << m_discovery->errorString();
+        setStatus(QStringLiteral("Bluetooth-Suche: %1").arg(m_discovery->errorString()));
+        if (!m_device2) m_scanRetry.start();
+    });
     connect(m_discovery, &PokitDiscoveryAgent::finished, this, [this] {
         if (!m_device) {
             setStatus(QStringLiteral("Kein Pokit gefunden – neuer Suchlauf …"));
-            QTimer::singleShot(3000, this, &PokitController::connectDevice);
+            m_scanRetry.start();
         } else if (!m_device2) {
             setStatus(QStringLiteral("CH1 aktiv – zweites Pokit wird weiter gesucht …"));
             // Pokits may sleep between advertising windows. Keep scanning in
             // short bursts while CH1 continues measuring, so CH2 is attached
             // as soon as it wakes without requiring a button press.
-            QTimer::singleShot(4000, this, &PokitController::connectDevice);
+            m_scanRetry.start();
         }
     });
     m_reconnectTimer.setSingleShot(true);
@@ -108,7 +131,13 @@ PokitController::PokitController(QObject *parent) : QObject(parent)
     m_meterWatchdog.setSingleShot(true);
     m_meterWatchdog.setInterval(5000);
     connect(&m_meterWatchdog, &QTimer::timeout, this, [this] {
-        if (!m_connected || !m_meterReady || m_feature != QStringLiteral("meter")) return;
+        if (!m_connected || m_feature != QStringLiteral("meter")) return;
+        if (!m_meterReady) {
+            m_device->controller()->disconnectFromDevice();
+            return;
+        }
+        m_meterValid = false;
+        emit meterValueChanged();
         setStatus(QStringLiteral("Multimeterdaten fehlen – Kanal wird neu synchronisiert …"));
         m_meter->enableReadingNotifications();
         QTimer::singleShot(600, this, [this] {
@@ -118,7 +147,13 @@ PokitController::PokitController(QObject *parent) : QObject(parent)
     m_meterWatchdog2.setSingleShot(true);
     m_meterWatchdog2.setInterval(5000);
     connect(&m_meterWatchdog2, &QTimer::timeout, this, [this] {
-        if (!m_connected2 || !m_meterReady2 || m_feature != QStringLiteral("meter")) return;
+        if (!m_connected2 || m_feature != QStringLiteral("meter")) return;
+        if (!m_meterReady2) {
+            m_device2->controller()->disconnectFromDevice();
+            return;
+        }
+        m_meterValid2 = false;
+        emit meterValueChanged();
         setStatus(QStringLiteral("CH2 Multimeterdaten fehlen – Kanal wird neu synchronisiert …"));
         m_meter2->enableReadingNotifications();
         QTimer::singleShot(600, this, [this] {
@@ -129,9 +164,81 @@ PokitController::PokitController(QObject *parent) : QObject(parent)
     connect(&m_automationTimer, &QTimer::timeout,
             this, &PokitController::processAutomationCommands);
     m_automationTimer.start();
+    m_meterPoll.setInterval(1000);
+    connect(&m_meterPoll, &QTimer::timeout, this, [this] {
+        if (m_feature != QStringLiteral("meter")) return;
+        for (int channel = 0; channel < 2; ++channel) {
+            if (!(channel ? m_connected2 : m_connected)) continue;
+            if (m_meterStatusReady[channel]) m_meterStatus[channel]->readStatusCharacteristic();
+            auto *meter = channel ? m_meter2 : m_meter;
+            auto &watchdog = channel ? m_meterWatchdog2 : m_meterWatchdog;
+            if (meter && (channel ? m_meterReady2 : m_meterReady)
+                && (!watchdog.isActive() || watchdog.remainingTime() < 3500)) {
+                meter->readReadingCharacteristic();
+            }
+        }
+    });
+    m_meterPoll.start();
     publishAutomationState();
     refreshSavedCaptures();
     QTimer::singleShot(500, this, &PokitController::connectDevice);
+}
+
+QVariantList PokitController::devices() const
+{
+    QVariantMap known = m_savedDevices;
+    const auto addCurrent = [&known](const QString &id, const QString &name, int channel, bool connected) {
+        if (id.isEmpty()) return;
+        QVariantMap entry = known.value(id).toMap();
+        entry.insert(QStringLiteral("name"), name);
+        entry.insert(QStringLiteral("channel"), channel);
+        entry.insert(QStringLiteral("connected"), connected);
+        known.insert(id, entry);
+    };
+    addCurrent(m_deviceId, m_deviceName, 1, m_connected);
+    addCurrent(m_deviceId2, m_deviceName2, 2, m_connected2);
+    QVariantList result;
+    for (auto it = known.cbegin(); it != known.cend(); ++it) {
+        QVariantMap entry = it.value().toMap();
+        entry.insert(QStringLiteral("id"), it.key());
+        entry.insert(QStringLiteral("saved"), m_savedDevices.contains(it.key()));
+        result.append(entry);
+    }
+    return result;
+}
+
+QString PokitController::deviceColor() const
+{
+    return m_savedDevices.value(m_deviceId).toMap().value(QStringLiteral("color")).toString();
+}
+
+QString PokitController::deviceColor2() const
+{
+    return m_savedDevices.value(m_deviceId2).toMap().value(QStringLiteral("color")).toString();
+}
+
+void PokitController::saveDeviceColor(const QString &id, const QString &color)
+{
+    const QStringList palette{QStringLiteral("#ff6666"), QStringLiteral("#d3d3d3"),
+                              QStringLiteral("#ffd629"), QStringLiteral("#55df89")};
+    if (!palette.contains(color)) return;
+    for (const QVariant &item : devices()) {
+        const QVariantMap entry = item.toMap();
+        if (entry.value(QStringLiteral("id")).toString() != id) continue;
+        QVariantMap saved = m_savedDevices;
+        saved.insert(id, QVariantMap{{QStringLiteral("name"), entry.value(QStringLiteral("name"))},
+                                     {QStringLiteral("color"), color}});
+        QSettings settings(QStringLiteral("PokitSuite"), QStringLiteral("PokitSuite"));
+        settings.setValue(QStringLiteral("devices"), saved);
+        settings.sync();
+        if (settings.status() != QSettings::NoError) {
+            setStatus(QStringLiteral("Gerätefarbe konnte nicht gespeichert werden"));
+            return;
+        }
+        m_savedDevices = saved;
+        emit devicesChanged();
+        return;
+    }
 }
 
 QVariantList PokitController::meterHistory() const
@@ -181,7 +288,6 @@ void PokitController::connectDevice()
 {
     if (m_device && !m_connected) m_device->controller()->connectToDevice();
     if (m_device2 && !m_connected2) m_device2->controller()->connectToDevice();
-    if (m_connected || m_connected2) activateCurrentFeature();
     if (m_device2) return;
     if (m_discovery->isActive()) return;
     setStatus(m_device ? QStringLiteral("Suche nach zweitem Pokit …")
@@ -192,7 +298,7 @@ void PokitController::connectDevice()
 void PokitController::attachDevice(const QBluetoothDeviceInfo &info)
 {
     const QString key = deviceKey(info);
-    if (key == m_deviceId || key == m_deviceId2) return;
+    if (key.isEmpty() || key == m_deviceId || key == m_deviceId2) return;
     if (m_device) { attachSecondDevice(info); return; }
     m_deviceId = key;
     m_deviceName = info.name();
@@ -203,7 +309,11 @@ void PokitController::attachDevice(const QBluetoothDeviceInfo &info)
         m_connected = true;
         emit connectedChanged();
         setStatus(QStringLiteral("Verbunden – Dienste werden initialisiert …"));
-        QTimer::singleShot(400, this, &PokitController::activateCurrentFeature);
+        QTimer::singleShot(400, this, [this] {
+            if (!m_connected) return;
+            if (m_feature == QStringLiteral("meter")) { ensureMeter(); startMeter(); }
+            else { ensureDso(); startScope(); }
+        });
     });
     connect(m_device->controller(), &QLowEnergyController::disconnected, this, [this] {
         m_meterWatchdog.stop();
@@ -213,6 +323,9 @@ void PokitController::attachDevice(const QBluetoothDeviceInfo &info)
         m_scopeRestartTimer.setInterval(500);
         m_connected = false;
         m_meterReady = false;
+        m_meterStatusReady[0] = false;
+        m_meterValid = m_meterOverrange = false;
+        emit meterValueChanged();
         m_dsoReady = false;
         emit connectedChanged();
         setStatus(QStringLiteral("Verbindung verloren – automatischer Neuaufbau …"));
@@ -247,7 +360,11 @@ void PokitController::attachSecondDevice(const QBluetoothDeviceInfo &info)
         m_connected2 = true;
         emit connectedChanged();
         setStatus(QStringLiteral("2 Pokits verbunden – Dienste werden initialisiert …"));
-        QTimer::singleShot(450, this, &PokitController::activateCurrentFeature);
+        QTimer::singleShot(450, this, [this] {
+            if (!m_connected2) return;
+            if (m_feature == QStringLiteral("meter")) { ensureMeter2(); startMeter2(); }
+            else { ensureDso2(); startScope2(); }
+        });
     });
     connect(m_device2->controller(), &QLowEnergyController::disconnected, this, [this] {
         m_meterWatchdog2.stop();
@@ -257,6 +374,9 @@ void PokitController::attachSecondDevice(const QBluetoothDeviceInfo &info)
         m_scopeRestartTimer2.setInterval(500);
         m_connected2 = false;
         m_meterReady2 = false;
+        m_meterStatusReady[1] = false;
+        m_meterValid2 = m_meterOverrange2 = false;
+        emit meterValueChanged();
         m_dsoReady2 = false;
         emit connectedChanged();
         setStatus(QStringLiteral("CH2 Verbindung verloren – automatischer Neuaufbau …"));
@@ -279,6 +399,7 @@ void PokitController::ensureMeter()
 {
     if (!m_device || m_meter) return;
     m_meter = m_device->multimeter();
+    ensureMeterStatus(false);
     connect(m_meter, &AbstractPokitService::serviceDetailsDiscovered, this, [this] {
         m_meterReady = true;
         m_meter->enableReadingNotifications();
@@ -291,9 +412,24 @@ void PokitController::ensureMeter()
     connect(m_meter, &MultimeterService::readingRead, this,
             [this](const MultimeterService::Reading &reading) {
         if (m_feature != QStringLiteral("meter")) return;
+        if (reading.mode != m_configuredMeterMode[0]) return;
+        m_meterOverrange = reading.mode != MultimeterService::Mode::Continuity
+            && std::abs(reading.value) >= 1e12;
+        if (m_meterOverrange) {
+            m_meterValid = false;
+            m_meterWatchdog.start();
+            emit meterValueChanged();
+            publishAutomationState();
+            return;
+        }
+        m_meterValid = reading.mode == m_configuredMeterMode[0]
+            && reading.status != MultimeterService::MeterStatus::Error
+            && (reading.mode == MultimeterService::Mode::Continuity || std::isfinite(reading.value));
+        if (!m_meterValid) { emit meterValueChanged(); return; }
         m_meterWatchdog.start();
-        m_meterValue = reading.value;
-        m_meterValues.append(reading.value);
+        m_meterValue = reading.mode == MultimeterService::Mode::Continuity
+            ? double(reading.status == MultimeterService::MeterStatus::Continuity) : reading.value;
+        m_meterValues.append(m_meterValue);
         if (m_meterValues.size() > 7200) m_meterValues.remove(0, m_meterValues.size() - 7200);
         emit meterValueChanged(); emit meterHistoryChanged();
         setStatus(QStringLiteral("Live-Messung"));
@@ -305,6 +441,7 @@ void PokitController::ensureMeter2()
 {
     if (!m_device2 || m_meter2) return;
     m_meter2 = m_device2->multimeter();
+    ensureMeterStatus(true);
     connect(m_meter2, &AbstractPokitService::serviceDetailsDiscovered, this, [this] {
         m_meterReady2 = true;
         m_meter2->enableReadingNotifications();
@@ -317,13 +454,57 @@ void PokitController::ensureMeter2()
     connect(m_meter2, &MultimeterService::readingRead, this,
             [this](const MultimeterService::Reading &reading) {
         if (m_feature != QStringLiteral("meter")) return;
+        if (reading.mode != m_configuredMeterMode[1]) return;
+        m_meterOverrange2 = reading.mode != MultimeterService::Mode::Continuity
+            && std::abs(reading.value) >= 1e12;
+        if (m_meterOverrange2) {
+            m_meterValid2 = false;
+            m_meterWatchdog2.start();
+            emit meterValueChanged();
+            publishAutomationState();
+            return;
+        }
+        m_meterValid2 = reading.mode == m_configuredMeterMode[1]
+            && reading.status != MultimeterService::MeterStatus::Error
+            && (reading.mode == MultimeterService::Mode::Continuity || std::isfinite(reading.value));
+        if (!m_meterValid2) { emit meterValueChanged(); return; }
         m_meterWatchdog2.start();
-        m_meterValue2 = reading.value;
-        m_meterValues2.append(reading.value);
+        m_meterValue2 = reading.mode == MultimeterService::Mode::Continuity
+            ? double(reading.status == MultimeterService::MeterStatus::Continuity) : reading.value;
+        m_meterValues2.append(m_meterValue2);
         if (m_meterValues2.size() > 7200) m_meterValues2.remove(0, m_meterValues2.size() - 7200);
         emit meterValueChanged(); emit meterHistoryChanged();
         setStatus(QStringLiteral("Live-Messung · 2 Kanäle"));
         publishAutomationState();
+    });
+}
+
+static QString switchLabel(std::optional<StatusService::SwitchPosition> position)
+{
+    using Position = StatusService::SwitchPosition;
+    if (position == Position::Voltage) return QStringLiteral("Schalter: Spannung");
+    if (position == Position::MultiMode) return QStringLiteral("Schalter: Kombi / mA");
+    if (position == Position::HighCurrent) return QStringLiteral("Schalter: hoher Strom");
+    return QStringLiteral("Schalter: unbekannt");
+}
+
+QString PokitController::meterSwitch() const { return switchLabel(m_meterSwitchPosition[0]); }
+QString PokitController::meterSwitch2() const { return switchLabel(m_meterSwitchPosition[1]); }
+
+void PokitController::ensureMeterStatus(bool second)
+{
+    auto *status = (second ? m_device2 : m_device)->status();
+    m_meterStatus[second] = status;
+    connect(status, &AbstractPokitService::serviceDetailsDiscovered, this, [this, second, status] {
+        m_meterStatusReady[second] = true;
+        if (m_feature == QStringLiteral("meter")) status->readStatusCharacteristic();
+    });
+    connect(status, &StatusService::deviceStatusRead, this, [this, second](const StatusService::Status &reading) {
+        if (!(second ? m_connected2 : m_connected)
+            || reading.switchPosition == m_meterSwitchPosition[second]) return;
+        m_meterSwitchPosition[second] = reading.switchPosition;
+        if (m_feature == QStringLiteral("meter")) configureMeter(second);
+        emit meterValueChanged();
     });
 }
 
@@ -818,9 +999,15 @@ void PokitController::publishAutomationState()
         {QStringLiteral("status"), m_status},
         {QStringLiteral("active_feature"), m_feature},
         {QStringLiteral("multimeter"), QJsonObject{
-            {QStringLiteral("value"), m_meterValue}, {QStringLiteral("unit"), m_meterUnit}}},
+            {QStringLiteral("value"), m_meterValue}, {QStringLiteral("unit"), m_meterUnit},
+            {QStringLiteral("valid"), m_connected && m_meterValid},
+            {QStringLiteral("overrange"), m_connected && m_meterOverrange},
+            {QStringLiteral("switch_position"), meterSwitch()}}},
         {QStringLiteral("multimeter2"), QJsonObject{
-            {QStringLiteral("value"), m_meterValue2}, {QStringLiteral("unit"), m_meterUnit}}},
+            {QStringLiteral("value"), m_meterValue2}, {QStringLiteral("unit"), m_meterUnit2},
+            {QStringLiteral("valid"), m_connected2 && m_meterValid2},
+            {QStringLiteral("overrange"), m_connected2 && m_meterOverrange2},
+            {QStringLiteral("switch_position"), meterSwitch2()}}},
         {QStringLiteral("scope"), scope},
         {QStringLiteral("scope2"), scope2},
         {QStringLiteral("channels"), QJsonArray{scope, scope2}}
@@ -922,13 +1109,11 @@ void PokitController::activateCurrentFeature()
     }
 }
 
-void PokitController::setMeterMode(const QString &mode)
+void PokitController::setMeterMode(int channel, const QString &mode)
 {
-    m_meterModeName = mode;
-    if (mode.contains(QStringLiteral("Current"))) m_meterUnit = mode.startsWith(QStringLiteral("AC")) ? QStringLiteral("A AC") : QStringLiteral("A DC");
-    else m_meterUnit = mode.startsWith(QStringLiteral("AC")) ? QStringLiteral("V AC") : QStringLiteral("V DC");
-    emit meterValueChanged();
-    if (m_feature == QStringLiteral("meter")) { startMeter(); startMeter2(); }
+    if (channel != 1 && channel != 2) return;
+    m_meterModeName[channel - 1] = mode;
+    if (m_feature == QStringLiteral("meter")) configureMeter(channel == 2);
 }
 
 void PokitController::setMeterInterval(int milliseconds)
@@ -939,25 +1124,67 @@ void PokitController::setMeterInterval(int milliseconds)
 
 void PokitController::startMeter()
 {
-    if (!m_connected || !m_meterReady) return;
-    MultimeterService::Mode mode = MultimeterService::Mode::DcVoltage;
-    if (m_meterModeName == QStringLiteral("AC Voltage")) mode = MultimeterService::Mode::AcVoltage;
-    else if (m_meterModeName == QStringLiteral("DC Current")) mode = MultimeterService::Mode::DcCurrent;
-    else if (m_meterModeName == QStringLiteral("AC Current")) mode = MultimeterService::Mode::AcCurrent;
-    m_meter->setSettings({mode, 255, quint32(m_meterInterval)});
-    m_meterWatchdog.start();
-    setStatus(QStringLiteral("Multimeter wird gestartet …"));
+    configureMeter(false);
 }
 
 void PokitController::startMeter2()
 {
-    if (!m_connected2 || !m_meterReady2) return;
-    MultimeterService::Mode mode = MultimeterService::Mode::DcVoltage;
-    if (m_meterModeName == QStringLiteral("AC Voltage")) mode = MultimeterService::Mode::AcVoltage;
-    else if (m_meterModeName == QStringLiteral("DC Current")) mode = MultimeterService::Mode::DcCurrent;
-    else if (m_meterModeName == QStringLiteral("AC Current")) mode = MultimeterService::Mode::AcCurrent;
-    m_meter2->setSettings({mode, 255, quint32(m_meterInterval)});
-    m_meterWatchdog2.start();
+    configureMeter(true);
+}
+
+void PokitController::configureMeter(bool second)
+{
+    if (!(second ? m_connected2 : m_connected)) return;
+    auto &watchdog = second ? m_meterWatchdog2 : m_meterWatchdog;
+    if (!(second ? m_meterReady2 : m_meterReady)) {
+        if (!watchdog.isActive()) watchdog.start(20000);
+        return;
+    }
+    using Mode = MultimeterService::Mode;
+    using Position = StatusService::SwitchPosition;
+    const auto position = m_meterSwitchPosition[second];
+    const QString &requested = m_meterModeName[second];
+    const bool ac = requested.startsWith(QStringLiteral("AC"));
+    const bool current = requested.endsWith(QStringLiteral("Current"));
+    Mode mode;
+    quint8 range = 255;
+    QString unit;
+    if (position == Position::HighCurrent || (current && position != Position::Voltage)) {
+        mode = ac ? Mode::AcCurrent : Mode::DcCurrent;
+        unit = ac ? QStringLiteral("A AC") : QStringLiteral("A DC");
+        if (position == Position::HighCurrent) range = +PokitPro::CurrentRange::_10A;
+        if (position == Position::MultiMode) range = +PokitPro::CurrentRange::_300mA;
+    } else if (position == Position::MultiMode) {
+        mode = Mode::Resistance;
+        unit = QStringLiteral("Ω");
+        if (requested == QStringLiteral("Diode")) {
+            mode = Mode::Diode;
+            range = 0;
+            unit = QStringLiteral("V");
+        } else if (requested == QStringLiteral("Capacitance")) {
+            mode = Mode::Capacitance;
+            unit = QStringLiteral("F");
+        } else if (requested == QStringLiteral("Continuity")) {
+            mode = Mode::Continuity;
+            range = 0;
+            unit = QStringLiteral("Durchgang");
+        }
+    } else {
+        mode = ac ? Mode::AcVoltage : Mode::DcVoltage;
+        unit = ac ? QStringLiteral("V AC") : QStringLiteral("V DC");
+    }
+    auto &valid = second ? m_meterValid2 : m_meterValid;
+    if (m_configuredMeterMode[second] != mode) {
+        (second ? m_meterValues2 : m_meterValues).clear();
+        emit meterHistoryChanged();
+    }
+    m_configuredMeterMode[second] = mode;
+    (second ? m_meterUnit2 : m_meterUnit) = unit;
+    valid = false;
+    (second ? m_meterOverrange2 : m_meterOverrange) = false;
+    emit meterValueChanged();
+    (second ? m_meter2 : m_meter)->setSettings({mode, range, quint32(m_meterInterval)});
+    watchdog.start(5000);
 }
 
 void PokitController::setScopeTrigger(const QString &mode, double level)

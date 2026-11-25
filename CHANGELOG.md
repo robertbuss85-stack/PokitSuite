@@ -10,10 +10,19 @@ All notable public changes are documented here. The project follows semantic ver
 - Simultaneous CH1/CH2 live multimeter values and scrolling histories
 - Concurrent CH1/CH2 DSO acquisition, metrics, overlay rendering and MCP telemetry
 - Repeated discovery while CH1 keeps measuring, allowing a sleeping CH2 to join later
+- Devices tab with locally saved red, light gray, yellow and green markers keyed by Bluetooth ID or MAC address
+- Per-channel Pokit Pro switch detection and separate multimeter mode selection, including diode, capacitance, resistance, continuity and low current
 
-### Compatibility
+### Fixed
+
+- Distinguish two devices when Windows supplies an empty Bluetooth UUID
+- Recover missing multimeter readings by reading the characteristic directly and reconnecting a stalled channel without restarting its peer
+- Keep multimeter readouts fixed in size and show `OL` for firmware overrange values instead of plotting them
+
+### Compatibility and validation
 
 - The existing single-device workflow and MCP telemetry fields remain supported
+- Confirmed live DC voltage readings and DSO acquisition on two Pokit Pro devices. Long-running Bluetooth stability and all combination-switch modes still need hardware validation.
 
 ## [0.2.0] - 2026-11-24
 

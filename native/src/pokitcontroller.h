@@ -6,6 +6,7 @@
 
 #include <qtpokit/dsoservice.h>
 #include <qtpokit/multimeterservice.h>
+#include <qtpokit/statusservice.h>
 
 class PokitDevice;
 class PokitDiscoveryAgent;
@@ -18,12 +19,22 @@ class PokitController final : public QObject
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QString deviceName READ deviceName NOTIFY deviceChanged)
     Q_PROPERTY(QString deviceName2 READ deviceName2 NOTIFY deviceChanged)
+    Q_PROPERTY(QVariantList devices READ devices NOTIFY devicesChanged)
+    Q_PROPERTY(QString deviceColor READ deviceColor NOTIFY devicesChanged)
+    Q_PROPERTY(QString deviceColor2 READ deviceColor2 NOTIFY devicesChanged)
     Q_PROPERTY(bool connected READ connected NOTIFY connectedChanged)
     Q_PROPERTY(bool connected2 READ connected2 NOTIFY connectedChanged)
     Q_PROPERTY(int connectedDeviceCount READ connectedDeviceCount NOTIFY connectedChanged)
     Q_PROPERTY(double meterValue READ meterValue NOTIFY meterValueChanged)
     Q_PROPERTY(double meterValue2 READ meterValue2 NOTIFY meterValueChanged)
     Q_PROPERTY(QString meterUnit READ meterUnit NOTIFY meterValueChanged)
+    Q_PROPERTY(QString meterUnit2 READ meterUnit2 NOTIFY meterValueChanged)
+    Q_PROPERTY(bool meterValid MEMBER m_meterValid NOTIFY meterValueChanged)
+    Q_PROPERTY(bool meterValid2 MEMBER m_meterValid2 NOTIFY meterValueChanged)
+    Q_PROPERTY(bool meterOverrange MEMBER m_meterOverrange NOTIFY meterValueChanged)
+    Q_PROPERTY(bool meterOverrange2 MEMBER m_meterOverrange2 NOTIFY meterValueChanged)
+    Q_PROPERTY(QString meterSwitch READ meterSwitch NOTIFY meterValueChanged)
+    Q_PROPERTY(QString meterSwitch2 READ meterSwitch2 NOTIFY meterValueChanged)
     Q_PROPERTY(QVariantList meterHistory READ meterHistory NOTIFY meterHistoryChanged)
     Q_PROPERTY(QVariantList meterHistory2 READ meterHistory2 NOTIFY meterHistoryChanged)
     Q_PROPERTY(QVariantList scopeSamples READ scopeSamples NOTIFY scopeSamplesChanged)
@@ -54,12 +65,18 @@ public:
     QString status() const { return m_status; }
     QString deviceName() const { return m_deviceName; }
     QString deviceName2() const { return m_deviceName2; }
+    QVariantList devices() const;
+    QString deviceColor() const;
+    QString deviceColor2() const;
     bool connected() const { return m_connected; }
     bool connected2() const { return m_connected2; }
     int connectedDeviceCount() const { return int(m_connected) + int(m_connected2); }
     double meterValue() const { return m_meterValue; }
     double meterValue2() const { return m_meterValue2; }
     QString meterUnit() const { return m_meterUnit; }
+    QString meterUnit2() const { return m_meterUnit2; }
+    QString meterSwitch() const;
+    QString meterSwitch2() const;
     QVariantList meterHistory() const;
     QVariantList meterHistory2() const;
     QVariantList scopeSamples() const;
@@ -86,9 +103,10 @@ public:
     QString activeFeature() const { return m_feature; }
 
     Q_INVOKABLE void connectDevice();
+    Q_INVOKABLE void saveDeviceColor(const QString &id, const QString &color);
     Q_INVOKABLE void showMultimeter();
     Q_INVOKABLE void showScope();
-    Q_INVOKABLE void setMeterMode(const QString &mode);
+    Q_INVOKABLE void setMeterMode(int channel, const QString &mode);
     Q_INVOKABLE void setMeterInterval(int milliseconds);
     Q_INVOKABLE void setScopeTrigger(const QString &mode, double level);
     Q_INVOKABLE void setScopeConfig(const QString &coupling, double voltsPerDiv, int timePerDivUs);
@@ -102,6 +120,7 @@ public:
 signals:
     void statusChanged();
     void deviceChanged();
+    void devicesChanged();
     void connectedChanged();
     void meterValueChanged();
     void meterHistoryChanged();
@@ -120,6 +139,8 @@ private:
     void ensureMeter();
     void ensureDso();
     void ensureMeter2();
+    void ensureMeterStatus(bool second);
+    void configureMeter(bool second);
     void ensureDso2();
     void startMeter();
     void startScope();
@@ -143,9 +164,11 @@ private:
     DsoService *m_dso = nullptr;
     DsoService *m_dso2 = nullptr;
     QTimer m_reconnectTimer;
+    QTimer m_scanRetry;
     QTimer m_reconnectTimer2;
     QTimer m_meterWatchdog;
     QTimer m_meterWatchdog2;
+    QTimer m_meterPoll;
     QTimer m_scopeWatchdog;
     QTimer m_scopeWatchdog2;
     QTimer m_scopeRestartTimer;
@@ -156,9 +179,19 @@ private:
     QString m_deviceName2 = QStringLiteral("Nicht verbunden");
     QString m_deviceId;
     QString m_deviceId2;
+    QVariantMap m_savedDevices;
     QString m_feature = QStringLiteral("meter");
     QString m_meterUnit = QStringLiteral("V DC");
-    QString m_meterModeName = QStringLiteral("DC Voltage");
+    QString m_meterUnit2 = QStringLiteral("V DC");
+    StatusService *m_meterStatus[2]{};
+    std::optional<StatusService::SwitchPosition> m_meterSwitchPosition[2];
+    MultimeterService::Mode m_configuredMeterMode[2]{};
+    bool m_meterValid = false;
+    bool m_meterValid2 = false;
+    bool m_meterOverrange = false;
+    bool m_meterOverrange2 = false;
+    bool m_meterStatusReady[2]{};
+    QString m_meterModeName[2]{QStringLiteral("DC Voltage"), QStringLiteral("DC Voltage")};
     QString m_triggerMode = QStringLiteral("free");
     QString m_scopeCoupling = QStringLiteral("DC");
     bool m_connected = false;

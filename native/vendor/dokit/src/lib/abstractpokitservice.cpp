@@ -12,6 +12,8 @@
 #include "../stringliterals_p.h"
 
 #include <qtpokit/pokitdevice.h>
+#include <qtpokit/multimeterservice.h>
+#include <qtpokit/statusservice.h>
 
 #include <QLowEnergyController>
 
@@ -248,6 +250,15 @@ bool AbstractPokitServicePrivate::createServiceObject()
         this, &AbstractPokitServicePrivate::errorOccurred);
 
     if (autoDiscover) {
+#ifdef Q_OS_WIN
+        // PokitSuite reads these values explicitly. Avoid WinRT probing
+        // every readable attribute while both instruments connect.
+        if (serviceUuid == MultimeterService::serviceUuid
+            || serviceUuid == StatusService::ServiceUuids::pokitPro) {
+            service->discoverDetails(QLowEnergyService::SkipValueDiscovery);
+            return true;
+        }
+#endif
         service->discoverDetails();
     }
     return true;
