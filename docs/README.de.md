@@ -6,7 +6,7 @@ PokitSuite wurde mit wesentlicher Unterstützung von **OpenAI Codex** entwickelt
 
 ## Funktionsstand
 
-- **Implementiert und am Pokit Pro getestet:** BLE-Suche, Verbindung und Wiederaufbau; Multimeter mit 0,5/1 s Intervall; Verlaufsschreiber; einkanaliges Oszilloskop; Trigger, Kopplung, V/div, Zeit/div; Einzelaufnahme; Signalmetriken.
+- **Implementiert:** automatische Suche und unabhängiger Wiederaufbau für zwei Pokit Pro; zweikanaliges Multimeter mit 0,5/1 s Intervall und zwei Verlaufskurven; zweikanaliges Oszilloskop mit CH1/CH2, Trigger, Kopplung, V/div, Zeit/div, Einzelaufnahme und Signalmetriken. CH1 ist hardwaregetestet; die Validierung des neu hinzugefügten CH2 läuft.
 - **Implementiert und protokollgetestet:** MCP-Server mit 17 Werkzeugen. Für Livewerte müssen PokitSuite und das Gerät laufen.
 - **Experimentell:** automatische Arduino-Skizzenbearbeitung, Kompilierung, Upload und erneute Messung; alte Weboberfläche.
 - **Geplant:** vier echte Messkanäle, native Langzeit-Logger-Oberfläche, signierter Installer, breitere Hardwaretests.

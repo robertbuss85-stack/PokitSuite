@@ -2,6 +2,19 @@
 
 All notable public changes are documented here. The project follows semantic versioning from its first public release.
 
+## [0.3.0] - 2026-11-25
+
+### Added
+
+- Independent BLE discovery, reconnect and watchdog handling for a second Pokit Pro
+- Simultaneous CH1/CH2 live multimeter values and scrolling histories
+- Concurrent CH1/CH2 DSO acquisition, metrics, overlay rendering and MCP telemetry
+- Repeated discovery while CH1 keeps measuring, allowing a sleeping CH2 to join later
+
+### Compatibility
+
+- The existing single-device workflow and MCP telemetry fields remain supported
+
 ## [0.2.0] - 2026-11-24
 
 ### Added

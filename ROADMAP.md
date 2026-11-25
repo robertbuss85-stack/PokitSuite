@@ -20,7 +20,7 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 
 ## Experimental / known limitations
 
-- Only one real Pokit Pro/CH1 has been validated; CH2–CH4 are placeholders
+- CH1 is hardware-validated; CH2 acquisition is implemented and awaiting full hardware validation; CH3–CH4 remain placeholders
 - Bluetooth behavior can vary with Windows adapter/driver and competing Pokit clients
 - Frequency/duty estimates need clean crossings and sufficient cycles
 - Arduino end-to-end autonomous repair is not validated for every board/core
@@ -39,7 +39,7 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 
 ### Later
 
-- Real multi-device acquisition for up to four synchronized channels
+- Extend the implemented two-device acquisition to CH3/CH4 and add cross-device time alignment
 - Cursor measurements, protocol-oriented views and richer trigger types
 - Cross-platform validation on Linux and macOS where BLE support permits
 - Guardrailed AI diagnosis recipes and repeatable hardware-in-the-loop tests

@@ -9,6 +9,8 @@ ApplicationWindow {
     property color panel: "#17212b"
     property color line: "#34424d"
     property color ch1: "#ffd629"
+    property color ch2: "#55dff5"
+    property color reference: "#b78cff"
     property real voltsDiv: 1.0
     property int timeDivUs: 10000
     property real verticalPosition: 0.0
@@ -28,8 +30,8 @@ ApplicationWindow {
                 Label { Layout.fillWidth:true;text:pokit.status;color:"#9eb0bd";font.pixelSize:12;elide:Text.ElideRight }
             }
             Item { Layout.fillWidth:true }
-            Label { Layout.preferredWidth:190;horizontalAlignment:Text.AlignRight;elide:Text.ElideRight;text:pokit.connected?"●  "+pokit.deviceName:"○  Nicht verbunden";color:pokit.connected?"#4ee6a5":"#91a0aa" }
-            Button { Layout.preferredWidth:125;text:pokit.connected?"Verbunden":"Verbinden";onClicked:pokit.connectDevice() }
+            Label { Layout.preferredWidth:260;horizontalAlignment:Text.AlignRight;elide:Text.ElideRight;text:pokit.connectedDeviceCount>0?"●  "+pokit.connectedDeviceCount+" Pokit"+(pokit.connectedDeviceCount===1?"":"s")+" verbunden":"○  Nicht verbunden";color:pokit.connectedDeviceCount>0?"#4ee6a5":"#91a0aa" }
+            Button { Layout.preferredWidth:125;text:pokit.connectedDeviceCount>=2?"2 verbunden":(pokit.connectedDeviceCount===1?"2. suchen":"Verbinden");onClicked:pokit.connectDevice() }
         }
     }
 
@@ -44,6 +46,7 @@ ApplicationWindow {
             Label { visible:pokit.activeFeature==="scope";text:"Zyklen  "+pokit.scopeCycles.toFixed(0);color:"#dce5e9" }
             Label { visible:pokit.activeFeature==="scope";text:"RMS  "+pokit.scopeRms.toFixed(3)+" V";color:"#dce5e9" }
             Label { visible:pokit.activeFeature==="scope";text:"Min/Max  "+pokit.scopeMinimum.toFixed(2)+" / "+pokit.scopeMaximum.toFixed(2)+" V";color:"#dce5e9" }
+            Label { visible:pokit.activeFeature==="scope"&&pokit.connected2;text:"CH2  "+pokit.scopeVpp2.toFixed(3)+" Vpp · "+(pokit.scopeFrequency2>0?pokit.scopeFrequency2.toFixed(1)+" Hz":"—");color:root.ch2;font.bold:true }
         }
         StackLayout { currentIndex:pokit.activeFeature==="meter"?0:1;Layout.fillWidth:true;Layout.fillHeight:true
             Rectangle { color:root.panel;radius:12;border.color:root.line
@@ -53,13 +56,26 @@ ApplicationWindow {
                         ComboBox { model:["DC Voltage","AC Voltage","DC Current","AC Current"];onActivated:pokit.setMeterMode(currentText) }
                         ComboBox { model:["0,5 s","1 s","2 s"];onActivated:pokit.setMeterInterval([500,1000,2000][currentIndex]) }
                     }
-                    Row { Layout.alignment:Qt.AlignHCenter;spacing:16
-                        Label { text:Number(pokit.meterValue).toLocaleString(Qt.locale("de_DE"),'f',4);color:"#edf6fb";font.pixelSize:92 }
-                        Label { text:pokit.meterUnit;color:"#93a9b8";font.pixelSize:24;anchors.baseline:parent.children[0].baseline }
+                    RowLayout { Layout.fillWidth:true;spacing:28
+                        ColumnLayout { Layout.fillWidth:true
+                            Label { text:"CH1 · "+pokit.deviceName;color:root.ch1;font.bold:true;Layout.alignment:Qt.AlignHCenter }
+                            Row { Layout.alignment:Qt.AlignHCenter;spacing:12
+                                Label { text:Number(pokit.meterValue).toLocaleString(Qt.locale("de_DE"),'f',4);color:"#edf6fb";font.pixelSize:64 }
+                                Label { text:pokit.meterUnit;color:"#93a9b8";font.pixelSize:22;anchors.baseline:parent.children[0].baseline }
+                            }
+                        }
+                        Rectangle { Layout.preferredWidth:1;Layout.fillHeight:true;color:root.line;visible:pokit.connected2 }
+                        ColumnLayout { Layout.fillWidth:true;visible:pokit.connected2
+                            Label { text:"CH2 · "+pokit.deviceName2;color:root.ch2;font.bold:true;Layout.alignment:Qt.AlignHCenter }
+                            Row { Layout.alignment:Qt.AlignHCenter;spacing:12
+                                Label { text:Number(pokit.meterValue2).toLocaleString(Qt.locale("de_DE"),'f',4);color:"#edf6fb";font.pixelSize:64 }
+                                Label { text:pokit.meterUnit;color:"#93a9b8";font.pixelSize:22;anchors.baseline:parent.children[0].baseline }
+                            }
+                        }
                     }
                     Canvas { id:meterCanvas;Layout.fillWidth:true;Layout.fillHeight:true
                         Connections { target:pokit;function onMeterHistoryChanged(){meterCanvas.requestPaint()} }
-                        onPaint:{let c=getContext("2d"),a=pokit.meterHistory;c.reset();c.strokeStyle="#2a3e4b";for(let i=0;i<5;i++){let y=i*height/4;c.beginPath();c.moveTo(0,y);c.lineTo(width,y);c.stroke()}if(a.length<2)return;let lo=Math.min(...a),hi=Math.max(...a);if(lo===hi){lo--;hi++}c.strokeStyle="#55e2b0";c.lineWidth=2;c.beginPath();for(let j=0;j<a.length;j++){let x=j*width/(a.length-1),y=(hi-a[j])*height/(hi-lo);j?c.lineTo(x,y):c.moveTo(x,y)}c.stroke()}
+                        onPaint:{let c=getContext("2d"),a=pokit.meterHistory,b=pokit.meterHistory2;c.reset();c.strokeStyle="#2a3e4b";for(let i=0;i<5;i++){let y=i*height/4;c.beginPath();c.moveTo(0,y);c.lineTo(width,y);c.stroke()}let all=a.concat(b);if(all.length<2)return;let lo=Math.min(...all),hi=Math.max(...all);if(lo===hi){lo--;hi++}function trace(v,color){if(v.length<2)return;c.strokeStyle=color;c.lineWidth=2;c.beginPath();for(let j=0;j<v.length;j++){let x=j*width/(v.length-1),y=(hi-v[j])*height/(hi-lo);j?c.lineTo(x,y):c.moveTo(x,y)}c.stroke()}trace(a,root.ch1);trace(b,root.ch2)}
                     }
                 }
             }
@@ -80,15 +96,15 @@ ApplicationWindow {
                                 }
                                 onWidthChanged:requestPaint();onHeightChanged:requestPaint()
                                 onPaint:{
-                                    let c=getContext("2d"),a=pokit.scopeSamples;c.reset();c.fillStyle="#07100b";c.fillRect(0,0,width,height);c.strokeStyle="#294a34";c.lineWidth=1
+                                    let c=getContext("2d"),a=pokit.scopeSamples,b=pokit.scopeSamples2;c.reset();c.fillStyle="#07100b";c.fillRect(0,0,width,height);c.strokeStyle="#294a34";c.lineWidth=1
                                     for(let i=0;i<=10;i++){let x=i*width/10;c.beginPath();c.moveTo(x,0);c.lineTo(x,height);c.stroke();for(let m=1;m<5&&i<10;m++){let xx=x+m*width/50;c.fillStyle="#25402f";c.fillRect(xx,height/2-2,1,5)}}
                                     for(let k=0;k<=8;k++){let y=k*height/8;c.beginPath();c.moveTo(0,y);c.lineTo(width,y);c.stroke();for(let n=1;n<5&&k<8;n++){let yy=y+n*height/40;c.fillStyle="#25402f";c.fillRect(width/2-2,yy,5,1)}}
                                     c.strokeStyle="#67806d";c.beginPath();c.moveTo(width/2,0);c.lineTo(width/2,height);c.stroke();c.beginPath();c.moveTo(0,height/2);c.lineTo(width,height/2);c.stroke()
                                     let tx=root.triggerPosition*width;c.fillStyle="#ff8c42";c.beginPath();c.moveTo(tx-7,0);c.lineTo(tx+7,0);c.lineTo(tx,10);c.closePath();c.fill()
                                     let zero=height/2-root.verticalPosition/root.voltsDiv*height/8;c.fillStyle=root.ch1;c.beginPath();c.moveTo(0,zero);c.lineTo(10,zero-6);c.lineTo(10,zero+6);c.closePath();c.fill()
                                     let saved=pokit.referenceSamples
-                                    if(saved.length>=2){c.globalAlpha=.72;c.strokeStyle="#55dff5";c.lineWidth=2;c.beginPath();for(let q=0;q<saved.length;q++){let sx=q*width/(saved.length-1),sy=height/2-((saved[q]-root.verticalPosition)/root.voltsDiv)*height/8;q?c.lineTo(sx,sy):c.moveTo(sx,sy)}c.stroke();c.globalAlpha=1}
-                                    if(a.length<2)return;c.strokeStyle=root.ch1;c.lineWidth=2;c.beginPath();for(let j=0;j<a.length;j++){let x=j*width/(a.length-1),y=height/2-((a[j]-root.verticalPosition)/root.voltsDiv)*height/8;j?c.lineTo(x,y):c.moveTo(x,y)}c.stroke()
+                                    function trace(v,color,alpha){if(v.length<2)return;c.globalAlpha=alpha;c.strokeStyle=color;c.lineWidth=2;c.beginPath();for(let q=0;q<v.length;q++){let x=q*width/(v.length-1),y=height/2-((v[q]-root.verticalPosition)/root.voltsDiv)*height/8;q?c.lineTo(x,y):c.moveTo(x,y)}c.stroke();c.globalAlpha=1}
+                                    trace(saved,root.reference,.72);trace(b,root.ch2,1);trace(a,root.ch1,1)
                                 }
                                 MouseArea { anchors.fill:parent;acceptedButtons:Qt.NoButton
                                     onWheel:function(wheel){root.setTimebaseIndex(timeBox.currentIndex+(wheel.angleDelta.y>0?-1:1));wheel.accepted=true}
@@ -97,6 +113,7 @@ ApplicationWindow {
                             RowLayout { Layout.fillWidth:true
                                 Label { text:"CH1";color:"#171300";font.bold:true;padding:4;background:Rectangle{color:root.ch1;radius:2} }
                                 Label { text:root.engineeringVoltage(root.voltsDiv);color:root.ch1;font.bold:true }
+                                Label { visible:pokit.connected2;text:"CH2";color:"#07100b";font.bold:true;padding:4;background:Rectangle{color:root.ch2;radius:2} }
                                 Item { Layout.fillWidth:true }
                                 Label { text:"M  "+root.engineeringTime(root.timeDivUs);color:"#d8e0d9";font.bold:true }
                                 Item { Layout.fillWidth:true }
@@ -109,8 +126,8 @@ ApplicationWindow {
                         ScrollView { anchors.fill:parent;anchors.margins:9;clip:true
                             ColumnLayout { width:294;spacing:8
                                 Label { text:"POKIT DSO · 4 CHANNEL READY";color:"#26333a";font.pixelSize:15;font.bold:true }
-                                RowLayout { Repeater { model:4;Button { required property int index;text:"CH"+(index+1);enabled:index===0;highlighted:index===0;Layout.fillWidth:true } } }
-                                GroupBox { title:"VERTICAL · CH1";Layout.fillWidth:true
+                                RowLayout { Repeater { model:4;Button { required property int index;text:"CH"+(index+1);enabled:index===0||(index===1&&pokit.connected2);highlighted:enabled;Layout.fillWidth:true } } }
+                                GroupBox { title:pokit.connected2?"VERTICAL · CH1 + CH2":"VERTICAL · CH1";Layout.fillWidth:true
                                     ColumnLayout { anchors.fill:parent
                                         RowLayout { Label{text:"Kopplung";Layout.fillWidth:true} ComboBox{id:coupling;model:["DC","AC"];onActivated:pokit.setScopeConfig(currentText,root.voltsDiv,root.timeDivUs)} }
                                         RowLayout { Label{text:"Volt / Div";Layout.fillWidth:true} ComboBox{id:voltsBox;model:["10 mV","20 mV","50 mV","100 mV","200 mV","500 mV","1 V","2 V","5 V","10 V","20 V","50 V"];currentIndex:6;onActivated:{let v=[.01,.02,.05,.1,.2,.5,1,2,5,10,20,50][currentIndex];root.voltsDiv=v;verticalSlider.from=-4*v;verticalSlider.to=4*v;triggerLevel.from=-400*v;triggerLevel.to=400*v;scopeCanvas.requestPaint();pokit.setScopeConfig(coupling.currentText,v,root.timeDivUs)}} }
@@ -128,7 +145,7 @@ ApplicationWindow {
                                 GroupBox { title:"TRIGGER";Layout.fillWidth:true
                                     ColumnLayout { anchors.fill:parent
                                         RowLayout { Label{text:"Modus";Layout.fillWidth:true} ComboBox{id:triggerMode;model:["Auto","Steigend","Fallend"];onActivated:pokit.setScopeTrigger(["free","rising","falling"][currentIndex],triggerLevel.value/100)} }
-                                        RowLayout { Label{text:"Quelle";Layout.fillWidth:true} ComboBox{model:["CH1","CH2","CH3","CH4"];enabled:false} }
+                                        RowLayout { Label{text:"Quelle";Layout.fillWidth:true} ComboBox{model:pokit.connected2?["je Kanal (CH1 + CH2)"]:["CH1"];enabled:false} }
                                         Label { text:"Pegel  "+(triggerLevel.value/100).toFixed(2)+" V" }
                                         Slider { id:triggerLevel;Layout.fillWidth:true;from:-400;to:400;value:0;stepSize:1;onMoved:pokit.setScopeTrigger(["free","rising","falling"][triggerMode.currentIndex],value/100) }
                                     }

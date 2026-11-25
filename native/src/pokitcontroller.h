@@ -17,11 +17,17 @@ class PokitController final : public QObject
     Q_OBJECT
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QString deviceName READ deviceName NOTIFY deviceChanged)
+    Q_PROPERTY(QString deviceName2 READ deviceName2 NOTIFY deviceChanged)
     Q_PROPERTY(bool connected READ connected NOTIFY connectedChanged)
+    Q_PROPERTY(bool connected2 READ connected2 NOTIFY connectedChanged)
+    Q_PROPERTY(int connectedDeviceCount READ connectedDeviceCount NOTIFY connectedChanged)
     Q_PROPERTY(double meterValue READ meterValue NOTIFY meterValueChanged)
+    Q_PROPERTY(double meterValue2 READ meterValue2 NOTIFY meterValueChanged)
     Q_PROPERTY(QString meterUnit READ meterUnit NOTIFY meterValueChanged)
     Q_PROPERTY(QVariantList meterHistory READ meterHistory NOTIFY meterHistoryChanged)
+    Q_PROPERTY(QVariantList meterHistory2 READ meterHistory2 NOTIFY meterHistoryChanged)
     Q_PROPERTY(QVariantList scopeSamples READ scopeSamples NOTIFY scopeSamplesChanged)
+    Q_PROPERTY(QVariantList scopeSamples2 READ scopeSamples2 NOTIFY scopeSamplesChanged)
     Q_PROPERTY(bool scopeRunning READ scopeRunning NOTIFY scopeStateChanged)
     Q_PROPERTY(double scopeSampleRate READ scopeSampleRate NOTIFY scopeStateChanged)
     Q_PROPERTY(double scopeVpp READ scopeVpp NOTIFY scopeMetricsChanged)
@@ -33,6 +39,11 @@ class PokitController final : public QObject
     Q_PROPERTY(double scopePeriod READ scopePeriod NOTIFY scopeMetricsChanged)
     Q_PROPERTY(double scopeCycles READ scopeCycles NOTIFY scopeMetricsChanged)
     Q_PROPERTY(double scopeDutyCycle READ scopeDutyCycle NOTIFY scopeMetricsChanged)
+    Q_PROPERTY(double scopeVpp2 READ scopeVpp2 NOTIFY scopeMetricsChanged)
+    Q_PROPERTY(double scopeMinimum2 READ scopeMinimum2 NOTIFY scopeMetricsChanged)
+    Q_PROPERTY(double scopeMaximum2 READ scopeMaximum2 NOTIFY scopeMetricsChanged)
+    Q_PROPERTY(double scopeRms2 READ scopeRms2 NOTIFY scopeMetricsChanged)
+    Q_PROPERTY(double scopeFrequency2 READ scopeFrequency2 NOTIFY scopeMetricsChanged)
     Q_PROPERTY(QVariantList savedCaptures READ savedCaptures NOTIFY savedCapturesChanged)
     Q_PROPERTY(QVariantList referenceSamples READ referenceSamples NOTIFY referenceChanged)
     Q_PROPERTY(QString referenceName READ referenceName NOTIFY referenceChanged)
@@ -42,11 +53,17 @@ public:
     explicit PokitController(QObject *parent = nullptr);
     QString status() const { return m_status; }
     QString deviceName() const { return m_deviceName; }
+    QString deviceName2() const { return m_deviceName2; }
     bool connected() const { return m_connected; }
+    bool connected2() const { return m_connected2; }
+    int connectedDeviceCount() const { return int(m_connected) + int(m_connected2); }
     double meterValue() const { return m_meterValue; }
+    double meterValue2() const { return m_meterValue2; }
     QString meterUnit() const { return m_meterUnit; }
     QVariantList meterHistory() const;
+    QVariantList meterHistory2() const;
     QVariantList scopeSamples() const;
+    QVariantList scopeSamples2() const;
     bool scopeRunning() const { return m_scopeRunning; }
     double scopeSampleRate() const { return m_scopeMetadata.samplingRate; }
     double scopeVpp() const { return m_scopeVpp; }
@@ -58,6 +75,11 @@ public:
     double scopePeriod() const { return m_scopePeriod; }
     double scopeCycles() const { return m_scopeCycles; }
     double scopeDutyCycle() const { return m_scopeDutyCycle; }
+    double scopeVpp2() const { return m_scopeVpp2; }
+    double scopeMinimum2() const { return m_scopeMinimum2; }
+    double scopeMaximum2() const { return m_scopeMaximum2; }
+    double scopeRms2() const { return m_scopeRms2; }
+    double scopeFrequency2() const { return m_scopeFrequency2; }
     QVariantList savedCaptures() const { return m_savedCaptures; }
     QVariantList referenceSamples() const;
     QString referenceName() const { return m_referenceName; }
@@ -93,42 +115,64 @@ signals:
 private:
     void setStatus(const QString &status);
     void attachDevice(const QBluetoothDeviceInfo &info);
+    void attachSecondDevice(const QBluetoothDeviceInfo &info);
     void activateCurrentFeature();
     void ensureMeter();
     void ensureDso();
+    void ensureMeter2();
+    void ensureDso2();
     void startMeter();
     void startScope();
+    void startMeter2();
+    void startScope2();
     void updateScopeMetrics();
+    void updateScopeMetrics2();
     void publishAutomationState();
     void processAutomationCommands();
     void scheduleReconnect();
+    void scheduleReconnect2();
     void refreshSavedCaptures();
     QString captureStoragePath() const;
     bool writeCapturePdf(const QString &path, const QJsonObject &capture) const;
 
     PokitDiscoveryAgent *m_discovery = nullptr;
     PokitDevice *m_device = nullptr;
+    PokitDevice *m_device2 = nullptr;
     MultimeterService *m_meter = nullptr;
+    MultimeterService *m_meter2 = nullptr;
     DsoService *m_dso = nullptr;
+    DsoService *m_dso2 = nullptr;
     QTimer m_reconnectTimer;
+    QTimer m_reconnectTimer2;
     QTimer m_meterWatchdog;
+    QTimer m_meterWatchdog2;
     QTimer m_scopeWatchdog;
+    QTimer m_scopeWatchdog2;
     QTimer m_scopeRestartTimer;
+    QTimer m_scopeRestartTimer2;
     QTimer m_automationTimer;
     QString m_status = QStringLiteral("Bereit");
     QString m_deviceName = QStringLiteral("Nicht verbunden");
+    QString m_deviceName2 = QStringLiteral("Nicht verbunden");
+    QString m_deviceId;
+    QString m_deviceId2;
     QString m_feature = QStringLiteral("meter");
     QString m_meterUnit = QStringLiteral("V DC");
     QString m_meterModeName = QStringLiteral("DC Voltage");
     QString m_triggerMode = QStringLiteral("free");
     QString m_scopeCoupling = QStringLiteral("DC");
     bool m_connected = false;
+    bool m_connected2 = false;
     bool m_meterReady = false;
+    bool m_meterReady2 = false;
     bool m_dsoReady = false;
+    bool m_dsoReady2 = false;
     bool m_scopeAccepting = false;
+    bool m_scopeAccepting2 = false;
     bool m_scopeRunning = true;
     bool m_scopeSingle = false;
     double m_meterValue = 0.0;
+    double m_meterValue2 = 0.0;
     double m_triggerLevel = 0.0;
     double m_scopeVoltsPerDiv = 1.0;
     double m_scopeVpp = 0.0;
@@ -140,15 +184,31 @@ private:
     double m_scopePeriod = 0.0;
     double m_scopeCycles = 0.0;
     double m_scopeDutyCycle = 0.0;
+    double m_scopeVpp2 = 0.0;
+    double m_scopeMinimum2 = 0.0;
+    double m_scopeMaximum2 = 0.0;
+    double m_scopeMean2 = 0.0;
+    double m_scopeRms2 = 0.0;
+    double m_scopeFrequency2 = 0.0;
+    double m_scopePeriod2 = 0.0;
+    double m_scopeCycles2 = 0.0;
+    double m_scopeDutyCycle2 = 0.0;
     int m_scopeTimePerDivUs = 10000;
     quint32 m_expectedScopeWindowUs = 100000;
     quint16 m_expectedScopeSamples = 1000;
+    quint32 m_expectedScopeWindowUs2 = 100000;
+    quint16 m_expectedScopeSamples2 = 1000;
     int m_scopeStableFrames = 0;
+    int m_scopeStableFrames2 = 0;
     int m_meterInterval = 500;
     DsoService::Metadata m_scopeMetadata{};
+    DsoService::Metadata m_scopeMetadata2{};
     QVector<double> m_meterValues;
+    QVector<double> m_meterValues2;
     QVector<double> m_scopeValues;
+    QVector<double> m_scopeValues2;
     QVector<double> m_scopePendingValues;
+    QVector<double> m_scopePendingValues2;
     QVariantList m_savedCaptures;
     QVector<double> m_referenceValues;
     QString m_referenceName;

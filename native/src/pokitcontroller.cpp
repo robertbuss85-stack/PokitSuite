@@ -31,6 +31,15 @@
 #include <algorithm>
 #include <cmath>
 
+static QString deviceKey(const QBluetoothDeviceInfo &info)
+{
+    const QString uuid = info.deviceUuid().toString(QUuid::WithoutBraces);
+    if (!uuid.isEmpty()) return uuid;
+    const QString address = info.address().toString();
+    if (!address.isEmpty() && address != QStringLiteral("00:00:00:00:00:00")) return address;
+    return info.name() + QStringLiteral("|") + QString::number(info.rssi());
+}
+
 PokitController::PokitController(QObject *parent) : QObject(parent)
 {
     m_discovery = new PokitDiscoveryAgent(this);
@@ -41,6 +50,12 @@ PokitController::PokitController(QObject *parent) : QObject(parent)
         if (!m_device) {
             setStatus(QStringLiteral("Kein Pokit gefunden – neuer Suchlauf …"));
             QTimer::singleShot(3000, this, &PokitController::connectDevice);
+        } else if (!m_device2) {
+            setStatus(QStringLiteral("CH1 aktiv – zweites Pokit wird weiter gesucht …"));
+            // Pokits may sleep between advertising windows. Keep scanning in
+            // short bursts while CH1 continues measuring, so CH2 is attached
+            // as soon as it wakes without requiring a button press.
+            QTimer::singleShot(4000, this, &PokitController::connectDevice);
         }
     });
     m_reconnectTimer.setSingleShot(true);
@@ -50,6 +65,11 @@ PokitController::PokitController(QObject *parent) : QObject(parent)
             setStatus(QStringLiteral("Verbindung wird wiederhergestellt …"));
             m_device->controller()->connectToDevice();
         }
+    });
+    m_reconnectTimer2.setSingleShot(true);
+    m_reconnectTimer2.setInterval(3000);
+    connect(&m_reconnectTimer2, &QTimer::timeout, this, [this] {
+        if (m_device2 && !m_connected2) m_device2->controller()->connectToDevice();
     });
     m_scopeWatchdog.setSingleShot(true);
     m_scopeWatchdog.setInterval(6000);
@@ -68,6 +88,23 @@ PokitController::PokitController(QObject *parent) : QObject(parent)
     m_scopeRestartTimer.setInterval(150);
     connect(&m_scopeRestartTimer, &QTimer::timeout,
             this, &PokitController::startScope);
+    m_scopeWatchdog2.setSingleShot(true);
+    m_scopeWatchdog2.setInterval(6000);
+    connect(&m_scopeWatchdog2, &QTimer::timeout, this, [this] {
+        if (!m_connected2 || !m_dsoReady2 || !m_scopeRunning ||
+            m_feature != QStringLiteral("scope")) return;
+        setStatus(QStringLiteral("CH2 Scope-Daten fehlen – Kanal wird neu synchronisiert …"));
+        m_dso2->enableMetadataNotifications();
+        QTimer::singleShot(350, this, [this] {
+            if (!m_connected2 || m_feature != QStringLiteral("scope")) return;
+            m_dso2->enableReadingNotifications();
+            QTimer::singleShot(700, this, [this] { startScope2(); });
+        });
+    });
+    m_scopeRestartTimer2.setSingleShot(true);
+    m_scopeRestartTimer2.setInterval(150);
+    connect(&m_scopeRestartTimer2, &QTimer::timeout,
+            this, &PokitController::startScope2);
     m_meterWatchdog.setSingleShot(true);
     m_meterWatchdog.setInterval(5000);
     connect(&m_meterWatchdog, &QTimer::timeout, this, [this] {
@@ -76,6 +113,16 @@ PokitController::PokitController(QObject *parent) : QObject(parent)
         m_meter->enableReadingNotifications();
         QTimer::singleShot(600, this, [this] {
             if (m_connected && m_feature == QStringLiteral("meter")) startMeter();
+        });
+    });
+    m_meterWatchdog2.setSingleShot(true);
+    m_meterWatchdog2.setInterval(5000);
+    connect(&m_meterWatchdog2, &QTimer::timeout, this, [this] {
+        if (!m_connected2 || !m_meterReady2 || m_feature != QStringLiteral("meter")) return;
+        setStatus(QStringLiteral("CH2 Multimeterdaten fehlen – Kanal wird neu synchronisiert …"));
+        m_meter2->enableReadingNotifications();
+        QTimer::singleShot(600, this, [this] {
+            if (m_connected2 && m_feature == QStringLiteral("meter")) startMeter2();
         });
     });
     m_automationTimer.setInterval(250);
@@ -94,10 +141,24 @@ QVariantList PokitController::meterHistory() const
     return list;
 }
 
+QVariantList PokitController::meterHistory2() const
+{
+    QVariantList list; list.reserve(m_meterValues2.size());
+    for (double value : m_meterValues2) list.append(value);
+    return list;
+}
+
 QVariantList PokitController::scopeSamples() const
 {
     QVariantList list; list.reserve(m_scopeValues.size());
     for (double value : m_scopeValues) list.append(value);
+    return list;
+}
+
+QVariantList PokitController::scopeSamples2() const
+{
+    QVariantList list; list.reserve(m_scopeValues2.size());
+    for (double value : m_scopeValues2) list.append(value);
     return list;
 }
 
@@ -118,17 +179,22 @@ void PokitController::setStatus(const QString &status)
 
 void PokitController::connectDevice()
 {
-    if (m_connected) { activateCurrentFeature(); return; }
-    if (m_device) { m_device->controller()->connectToDevice(); return; }
+    if (m_device && !m_connected) m_device->controller()->connectToDevice();
+    if (m_device2 && !m_connected2) m_device2->controller()->connectToDevice();
+    if (m_connected || m_connected2) activateCurrentFeature();
+    if (m_device2) return;
     if (m_discovery->isActive()) return;
-    setStatus(QStringLiteral("Suche nach Pokit …"));
+    setStatus(m_device ? QStringLiteral("Suche nach zweitem Pokit …")
+                       : QStringLiteral("Suche nach Pokit …"));
     m_discovery->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
 }
 
 void PokitController::attachDevice(const QBluetoothDeviceInfo &info)
 {
-    if (m_device) return;
-    m_discovery->stop();
+    const QString key = deviceKey(info);
+    if (key == m_deviceId || key == m_deviceId2) return;
+    if (m_device) { attachSecondDevice(info); return; }
+    m_deviceId = key;
     m_deviceName = info.name();
     emit deviceChanged();
     m_device = new PokitDevice(info, this);
@@ -170,6 +236,45 @@ void PokitController::attachDevice(const QBluetoothDeviceInfo &info)
     m_device->controller()->connectToDevice();
 }
 
+void PokitController::attachSecondDevice(const QBluetoothDeviceInfo &info)
+{
+    if (m_device2) return;
+    m_deviceId2 = deviceKey(info);
+    m_deviceName2 = info.name().isEmpty() ? QStringLiteral("Pokit CH2") : info.name();
+    emit deviceChanged();
+    m_device2 = new PokitDevice(info, this);
+    connect(m_device2->controller(), &QLowEnergyController::connected, this, [this] {
+        m_connected2 = true;
+        emit connectedChanged();
+        setStatus(QStringLiteral("2 Pokits verbunden – Dienste werden initialisiert …"));
+        QTimer::singleShot(450, this, &PokitController::activateCurrentFeature);
+    });
+    connect(m_device2->controller(), &QLowEnergyController::disconnected, this, [this] {
+        m_meterWatchdog2.stop();
+        m_scopeWatchdog2.stop();
+        m_scopeRestartTimer2.stop();
+        m_scopeStableFrames2 = 0;
+        m_scopeRestartTimer2.setInterval(500);
+        m_connected2 = false;
+        m_meterReady2 = false;
+        m_dsoReady2 = false;
+        emit connectedChanged();
+        setStatus(QStringLiteral("CH2 Verbindung verloren – automatischer Neuaufbau …"));
+        scheduleReconnect2();
+    });
+    connect(m_device2->controller(), &QLowEnergyController::errorOccurred, this,
+            [this](QLowEnergyController::Error error) {
+        qWarning().noquote() << "PokitSuite: CH2 Controllerfehler" << int(error)
+                             << m_device2->controller()->errorString();
+        if (!m_connected2) {
+            m_device2->controller()->disconnectFromDevice();
+            scheduleReconnect2();
+        }
+    });
+    if (m_feature == QStringLiteral("meter")) ensureMeter2(); else ensureDso2();
+    m_device2->controller()->connectToDevice();
+}
+
 void PokitController::ensureMeter()
 {
     if (!m_device || m_meter) return;
@@ -192,6 +297,32 @@ void PokitController::ensureMeter()
         if (m_meterValues.size() > 7200) m_meterValues.remove(0, m_meterValues.size() - 7200);
         emit meterValueChanged(); emit meterHistoryChanged();
         setStatus(QStringLiteral("Live-Messung"));
+        publishAutomationState();
+    });
+}
+
+void PokitController::ensureMeter2()
+{
+    if (!m_device2 || m_meter2) return;
+    m_meter2 = m_device2->multimeter();
+    connect(m_meter2, &AbstractPokitService::serviceDetailsDiscovered, this, [this] {
+        m_meterReady2 = true;
+        m_meter2->enableReadingNotifications();
+        QTimer::singleShot(700, this, [this] {
+            if (m_feature == QStringLiteral("meter") && m_connected2) startMeter2();
+        });
+    });
+    connect(m_meter2, &AbstractPokitService::serviceErrorOccurred, this,
+            [](QLowEnergyService::ServiceError error) { qWarning() << "CH2 Meter service error" << int(error); });
+    connect(m_meter2, &MultimeterService::readingRead, this,
+            [this](const MultimeterService::Reading &reading) {
+        if (m_feature != QStringLiteral("meter")) return;
+        m_meterWatchdog2.start();
+        m_meterValue2 = reading.value;
+        m_meterValues2.append(reading.value);
+        if (m_meterValues2.size() > 7200) m_meterValues2.remove(0, m_meterValues2.size() - 7200);
+        emit meterValueChanged(); emit meterHistoryChanged();
+        setStatus(QStringLiteral("Live-Messung · 2 Kanäle"));
         publishAutomationState();
     });
 }
@@ -263,6 +394,52 @@ void PokitController::ensureDso()
     });
 }
 
+void PokitController::ensureDso2()
+{
+    if (!m_device2 || m_dso2) return;
+    m_dso2 = m_device2->dso();
+    connect(m_dso2, &AbstractPokitService::serviceDetailsDiscovered, this, [this] {
+        m_dsoReady2 = true;
+        m_dso2->enableMetadataNotifications();
+        QTimer::singleShot(400, this, [this] {
+            if (!m_connected2) return;
+            m_dso2->enableReadingNotifications();
+            QTimer::singleShot(700, this, [this] {
+                if (m_feature == QStringLiteral("scope") && m_connected2) startScope2();
+            });
+        });
+    });
+    connect(m_dso2, &AbstractPokitService::serviceErrorOccurred, this,
+            [](QLowEnergyService::ServiceError error) { qWarning() << "CH2 DSO service error" << int(error); });
+    connect(m_dso2, &DsoService::metadataRead, this, [this](const DsoService::Metadata &meta) {
+        if (m_feature != QStringLiteral("scope")) return;
+        if (meta.samplingWindow != m_expectedScopeWindowUs2 ||
+            meta.numberOfSamples != m_expectedScopeSamples2) return;
+        m_scopeAccepting2 = true;
+        m_scopeMetadata2 = meta;
+        m_scopePendingValues2.clear();
+        m_scopePendingValues2.reserve(meta.numberOfSamples);
+        m_scopeWatchdog2.start();
+        emit scopeStateChanged();
+    });
+    connect(m_dso2, &DsoService::samplesRead, this, [this](const DsoService::Samples &samples) {
+        if (!m_scopeAccepting2 || m_feature != QStringLiteral("scope")) return;
+        m_scopeWatchdog2.start();
+        for (qint16 sample : samples) m_scopePendingValues2.append(sample * m_scopeMetadata2.scale);
+        if (m_scopeMetadata2.numberOfSamples > 0 &&
+            m_scopePendingValues2.size() >= m_scopeMetadata2.numberOfSamples) {
+            m_scopePendingValues2.resize(m_scopeMetadata2.numberOfSamples);
+            m_scopeValues2 = m_scopePendingValues2;
+            updateScopeMetrics2();
+            emit scopeSamplesChanged();
+            publishAutomationState();
+            if (++m_scopeStableFrames2 >= 5) m_scopeRestartTimer2.setInterval(150);
+            if (m_feature == QStringLiteral("scope") && m_connected2 && m_scopeRunning)
+                m_scopeRestartTimer2.start();
+        }
+    });
+}
+
 void PokitController::updateScopeMetrics()
 {
     if (m_scopeValues.isEmpty()) return;
@@ -296,6 +473,38 @@ void PokitController::updateScopeMetrics()
                                       double(risingEdges.size() - 1);
         m_scopeFrequency = m_scopeMetadata.samplingRate / averageSamples;
         m_scopePeriod = 1.0 / m_scopeFrequency;
+    }
+    emit scopeMetricsChanged();
+}
+
+void PokitController::updateScopeMetrics2()
+{
+    if (m_scopeValues2.isEmpty()) return;
+    const auto [minimum, maximum] = std::minmax_element(m_scopeValues2.cbegin(), m_scopeValues2.cend());
+    m_scopeMinimum2 = *minimum;
+    m_scopeMaximum2 = *maximum;
+    m_scopeVpp2 = m_scopeMaximum2 - m_scopeMinimum2;
+    double sum = 0.0, squareSum = 0.0;
+    for (double value : m_scopeValues2) { sum += value; squareSum += value * value; }
+    m_scopeMean2 = sum / m_scopeValues2.size();
+    m_scopeRms2 = std::sqrt(squareSum / m_scopeValues2.size());
+    const double threshold = (m_scopeMinimum2 + m_scopeMaximum2) * 0.5;
+    QVector<int> risingEdges;
+    int highSamples = 0;
+    for (int index = 1; index < m_scopeValues2.size(); ++index) {
+        if (m_scopeValues2[index] >= threshold) ++highSamples;
+        if (m_scopeValues2[index - 1] < threshold && m_scopeValues2[index] >= threshold)
+            risingEdges.append(index);
+    }
+    m_scopeDutyCycle2 = 100.0 * highSamples / qMax(1, m_scopeValues2.size() - 1);
+    m_scopeCycles2 = qMax(0, risingEdges.size() - 1);
+    m_scopeFrequency2 = 0.0;
+    m_scopePeriod2 = 0.0;
+    if (risingEdges.size() >= 2 && m_scopeMetadata2.samplingRate > 0) {
+        const double averageSamples = double(risingEdges.last() - risingEdges.first()) /
+                                      double(risingEdges.size() - 1);
+        m_scopeFrequency2 = m_scopeMetadata2.samplingRate / averageSamples;
+        m_scopePeriod2 = 1.0 / m_scopeFrequency2;
     }
     emit scopeMetricsChanged();
 }
@@ -563,6 +772,15 @@ void PokitController::publishAutomationState()
     };
     QJsonArray waveform;
     for (double value : m_scopeValues) waveform.append(value);
+    QJsonObject metrics2{
+        {QStringLiteral("minimum_v"), m_scopeMinimum2},
+        {QStringLiteral("maximum_v"), m_scopeMaximum2},
+        {QStringLiteral("vpp_v"), m_scopeVpp2},
+        {QStringLiteral("rms_v"), m_scopeRms2},
+        {QStringLiteral("frequency_hz"), m_scopeFrequency2}
+    };
+    QJsonArray waveform2;
+    for (double value : m_scopeValues2) waveform2.append(value);
     QJsonObject scope{
         {QStringLiteral("sample_rate_hz"), double(m_scopeMetadata.samplingRate)},
         {QStringLiteral("sampling_window_us"), double(m_scopeMetadata.samplingWindow)},
@@ -577,16 +795,35 @@ void PokitController::publishAutomationState()
         {QStringLiteral("metrics"), metrics},
         {QStringLiteral("waveform_v"), waveform}
     };
+    QJsonObject scope2{
+        {QStringLiteral("sample_rate_hz"), double(m_scopeMetadata2.samplingRate)},
+        {QStringLiteral("sampling_window_us"), double(m_scopeMetadata2.samplingWindow)},
+        {QStringLiteral("samples"), m_scopeValues2.size()},
+        {QStringLiteral("time_per_div_us"), m_scopeTimePerDivUs},
+        {QStringLiteral("volts_per_div"), m_scopeVoltsPerDiv},
+        {QStringLiteral("coupling"), m_scopeCoupling},
+        {QStringLiteral("trigger_mode"), m_triggerMode},
+        {QStringLiteral("trigger_level_v"), m_triggerLevel},
+        {QStringLiteral("metrics"), metrics2},
+        {QStringLiteral("waveform_v"), waveform2}
+    };
     QJsonObject state{
         {QStringLiteral("schema"), QStringLiteral("pokitsuite.telemetry.v1")},
         {QStringLiteral("timestamp_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
         {QStringLiteral("connected"), m_connected},
         {QStringLiteral("device"), m_deviceName},
+        {QStringLiteral("connected2"), m_connected2},
+        {QStringLiteral("device2"), m_deviceName2},
+        {QStringLiteral("connected_device_count"), (m_connected ? 1 : 0) + (m_connected2 ? 1 : 0)},
         {QStringLiteral("status"), m_status},
         {QStringLiteral("active_feature"), m_feature},
         {QStringLiteral("multimeter"), QJsonObject{
             {QStringLiteral("value"), m_meterValue}, {QStringLiteral("unit"), m_meterUnit}}},
-        {QStringLiteral("scope"), scope}
+        {QStringLiteral("multimeter2"), QJsonObject{
+            {QStringLiteral("value"), m_meterValue2}, {QStringLiteral("unit"), m_meterUnit}}},
+        {QStringLiteral("scope"), scope},
+        {QStringLiteral("scope2"), scope2},
+        {QStringLiteral("channels"), QJsonArray{scope, scope2}}
     };
     QSaveFile file(root.filePath(QStringLiteral("data/pokit_live.json")));
     if (file.open(QIODevice::WriteOnly)) {
@@ -631,12 +868,20 @@ void PokitController::scheduleReconnect()
     if (!m_reconnectTimer.isActive()) m_reconnectTimer.start();
 }
 
+void PokitController::scheduleReconnect2()
+{
+    if (!m_reconnectTimer2.isActive()) m_reconnectTimer2.start();
+}
+
 void PokitController::showMultimeter()
 {
     if (m_feature == QStringLiteral("meter")) return;
     m_scopeAccepting = false;
+    m_scopeAccepting2 = false;
     m_scopeWatchdog.stop();
+    m_scopeWatchdog2.stop();
     m_scopeRestartTimer.stop();
+    m_scopeRestartTimer2.stop();
     // Keep CCCD subscriptions alive. Repeated disable/enable descriptor writes
     // are unreliable with the Windows BLE backend and Pokit firmware 2.x.
     // Late DSO packets are discarded by m_scopeAccepting instead.
@@ -650,12 +895,17 @@ void PokitController::showScope()
     if (m_meter) {
         m_meter->setSettings({MultimeterService::Mode::Idle, 0, 1000});
     }
+    if (m_meter2) m_meter2->setSettings({MultimeterService::Mode::Idle, 0, 1000});
     m_meterWatchdog.stop();
+    m_meterWatchdog2.stop();
     m_scopeAccepting = true;
+    m_scopeAccepting2 = true;
     m_scopeRunning = true;
     m_scopeSingle = false;
     m_scopeValues.clear();
     m_scopePendingValues.clear();
+    m_scopeValues2.clear();
+    m_scopePendingValues2.clear();
     emit scopeSamplesChanged();
     emit scopeStateChanged();
     m_feature = QStringLiteral("scope"); emit activeFeatureChanged();
@@ -664,9 +914,12 @@ void PokitController::showScope()
 
 void PokitController::activateCurrentFeature()
 {
-    if (!m_connected) { connectDevice(); return; }
-    if (m_feature == QStringLiteral("meter")) { ensureMeter(); startMeter(); }
-    else { ensureDso(); startScope(); }
+    if (!m_connected && !m_connected2) { connectDevice(); return; }
+    if (m_feature == QStringLiteral("meter")) {
+        ensureMeter(); ensureMeter2(); startMeter(); startMeter2();
+    } else {
+        ensureDso(); ensureDso2(); startScope(); startScope2();
+    }
 }
 
 void PokitController::setMeterMode(const QString &mode)
@@ -675,13 +928,13 @@ void PokitController::setMeterMode(const QString &mode)
     if (mode.contains(QStringLiteral("Current"))) m_meterUnit = mode.startsWith(QStringLiteral("AC")) ? QStringLiteral("A AC") : QStringLiteral("A DC");
     else m_meterUnit = mode.startsWith(QStringLiteral("AC")) ? QStringLiteral("V AC") : QStringLiteral("V DC");
     emit meterValueChanged();
-    if (m_feature == QStringLiteral("meter")) startMeter();
+    if (m_feature == QStringLiteral("meter")) { startMeter(); startMeter2(); }
 }
 
 void PokitController::setMeterInterval(int milliseconds)
 {
     m_meterInterval = qBound(250, milliseconds, 10000);
-    if (m_feature == QStringLiteral("meter")) startMeter();
+    if (m_feature == QStringLiteral("meter")) { startMeter(); startMeter2(); }
 }
 
 void PokitController::startMeter()
@@ -696,11 +949,23 @@ void PokitController::startMeter()
     setStatus(QStringLiteral("Multimeter wird gestartet …"));
 }
 
+void PokitController::startMeter2()
+{
+    if (!m_connected2 || !m_meterReady2) return;
+    MultimeterService::Mode mode = MultimeterService::Mode::DcVoltage;
+    if (m_meterModeName == QStringLiteral("AC Voltage")) mode = MultimeterService::Mode::AcVoltage;
+    else if (m_meterModeName == QStringLiteral("DC Current")) mode = MultimeterService::Mode::DcCurrent;
+    else if (m_meterModeName == QStringLiteral("AC Current")) mode = MultimeterService::Mode::AcCurrent;
+    m_meter2->setSettings({mode, 255, quint32(m_meterInterval)});
+    m_meterWatchdog2.start();
+}
+
 void PokitController::setScopeTrigger(const QString &mode, double level)
 {
     m_triggerMode = mode; m_triggerLevel = level;
     m_scopeRestartTimer.stop();
-    if (m_feature == QStringLiteral("scope") && m_scopeRunning) startScope();
+    m_scopeRestartTimer2.stop();
+    if (m_feature == QStringLiteral("scope") && m_scopeRunning) { startScope(); startScope2(); }
 }
 
 void PokitController::setScopeConfig(const QString &coupling, double voltsPerDiv, int timePerDivUs)
@@ -709,7 +974,8 @@ void PokitController::setScopeConfig(const QString &coupling, double voltsPerDiv
     m_scopeVoltsPerDiv = qBound(0.01, voltsPerDiv, 100.0);
     m_scopeTimePerDivUs = qBound(10, timePerDivUs, 1000000);
     m_scopeRestartTimer.stop();
-    if (m_feature == QStringLiteral("scope") && m_scopeRunning) startScope();
+    m_scopeRestartTimer2.stop();
+    if (m_feature == QStringLiteral("scope") && m_scopeRunning) { startScope(); startScope2(); }
 }
 
 void PokitController::setScopeRunning(bool running)
@@ -717,14 +983,21 @@ void PokitController::setScopeRunning(bool running)
     m_scopeRunning = running;
     m_scopeSingle = false;
     emit scopeStateChanged();
-    if (!m_connected || !m_dsoReady) return;
-    if (running) startScope();
+    if ((!m_connected || !m_dsoReady) && (!m_connected2 || !m_dsoReady2)) return;
+    if (running) { startScope(); startScope2(); }
     else {
         m_scopeWatchdog.stop();
+        m_scopeWatchdog2.stop();
         m_scopeRestartTimer.stop();
+        m_scopeRestartTimer2.stop();
         m_scopeAccepting = false;
-        m_dso->setSettings({DsoService::Command::FreeRunning, 0.0f, DsoService::Mode::Idle,
-                            +PokitPro::VoltageRange::_10V, 100000, 1000});
+        m_scopeAccepting2 = false;
+        if (m_dso && m_dsoReady)
+            m_dso->setSettings({DsoService::Command::FreeRunning, 0.0f, DsoService::Mode::Idle,
+                                +PokitPro::VoltageRange::_10V, 100000, 1000});
+        if (m_dso2 && m_dsoReady2)
+            m_dso2->setSettings({DsoService::Command::FreeRunning, 0.0f, DsoService::Mode::Idle,
+                                 +PokitPro::VoltageRange::_10V, 100000, 1000});
         setStatus(QStringLiteral("Scope angehalten"));
     }
 }
@@ -734,7 +1007,7 @@ void PokitController::scopeSingle()
     m_scopeSingle = true;
     m_scopeRunning = true;
     emit scopeStateChanged();
-    startScope();
+    startScope(); startScope2();
 }
 
 void PokitController::startScope()
@@ -767,5 +1040,33 @@ void PokitController::startScope()
     m_scopeWatchdog.start();
     if (m_scopeValues.isEmpty())
         setStatus(QStringLiteral("Scope wird gestartet …"));
+}
+
+void PokitController::startScope2()
+{
+    if (!m_connected2 || !m_dsoReady2 || !m_scopeRunning) return;
+    DsoService::Command command = DsoService::Command::FreeRunning;
+    if (m_triggerMode == QStringLiteral("rising")) command = DsoService::Command::RisingEdgeTrigger;
+    else if (m_triggerMode == QStringLiteral("falling")) command = DsoService::Command::FallingEdgeTrigger;
+    const double requiredPeak = m_scopeVoltsPerDiv * 4.0;
+    quint8 range = +PokitPro::VoltageRange::_600V;
+    if (requiredPeak <= 0.25) range = +PokitPro::VoltageRange::_250mV;
+    else if (requiredPeak <= 2.0) range = +PokitPro::VoltageRange::_2V;
+    else if (requiredPeak <= 10.0) range = +PokitPro::VoltageRange::_10V;
+    else if (requiredPeak <= 30.0) range = +PokitPro::VoltageRange::_30V;
+    else if (requiredPeak <= 60.0) range = +PokitPro::VoltageRange::_60V;
+    else if (requiredPeak <= 125.0) range = +PokitPro::VoltageRange::_125V;
+    else if (requiredPeak <= 400.0) range = +PokitPro::VoltageRange::_400V;
+    const auto mode = m_scopeCoupling == QStringLiteral("AC")
+        ? DsoService::Mode::AcVoltage : DsoService::Mode::DcVoltage;
+    const float safeTrigger = float(qBound(-requiredPeak, m_triggerLevel, requiredPeak));
+    const quint32 windowUs = quint32(m_scopeTimePerDivUs * 10);
+    const quint16 samples = quint16(qBound(100u, windowUs, 1000u));
+    m_expectedScopeWindowUs2 = windowUs;
+    m_expectedScopeSamples2 = samples;
+    m_scopeAccepting2 = false;
+    m_scopePendingValues2.clear();
+    m_dso2->setSettings({command, safeTrigger, mode, range, windowUs, samples});
+    m_scopeWatchdog2.start();
 }
 

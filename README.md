@@ -19,13 +19,13 @@ PokitSuite is a native Windows measurement application for Pokit Pro Bluetooth i
 | Area | Status | Notes |
 |---|---|---|
 | Pokit Pro discovery and BLE reconnect | Implemented, hardware-tested | Automatic reconnect, watchdogs, feature activation and wake traffic |
-| Digital multimeter | Implemented, hardware-tested | Automatic start, modes, 0.5 s / 1 s intervals, scrolling time-value history |
-| One-channel DSO | Implemented, hardware-tested | Continuous/single acquisition, coupling, V/div, time/div, trigger mode/level/position |
+| Dual-device digital multimeter | Implemented; CH1 hardware-tested | Automatic discovery, independent BLE watchdogs, 0.5 s / 1 s intervals and two live histories |
+| Two-channel DSO | Implemented; CH1 hardware-tested | Concurrent CH1/CH2 acquisition, continuous/single acquisition, coupling, V/div, time/div and trigger controls |
 | Signal metrics | Implemented, hardware-tested | Min, max, mean, RMS, Vpp, frequency, period, cycles and duty cycle |
 | Capture reports and comparison curves | Implemented, hardware-tested | PDF report, CSV value table, JSON waveform archive and selectable overlay |
 | MCP measurement tools | Implemented, protocol-tested | 17 tools over stdio; live values require a running native app |
 | Arduino edit/compile/upload loop | Experimental | Backup-aware edits and CLI integration; board/FQBN and physical target remain user-dependent |
-| Four-channel UI | Planned | UI anticipates four instruments; only CH1 is currently operational |
+| Four-channel UI | Experimental | CH1 and CH2 are operational; CH3 and CH4 remain planned |
 | Native logger workspace | Planned | DMM history is available; a dedicated long-duration logger UI is not yet native |
 | Legacy browser UI | Experimental/legacy | Retained for compatibility; native Qt application is the supported frontend |
 
