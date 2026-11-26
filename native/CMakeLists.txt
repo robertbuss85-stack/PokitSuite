@@ -30,6 +30,8 @@ target_compile_definitions(QtPokit PRIVATE QTPOKIT_LIBRARY QT_NO_KEYWORDS)
 
 qt_add_executable(PokitSuiteNative
   src/main.cpp
+  src/pokitbridge.cpp
+  src/pokitbridge.h
   src/pokitcontroller.cpp
   src/pokitcontroller.h)
 
@@ -40,5 +42,8 @@ qt_add_qml_module(PokitSuiteNative
 
 target_link_libraries(PokitSuiteNative PRIVATE
   Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Bluetooth QtPokit)
+if(WIN32)
+  target_link_libraries(PokitSuiteNative PRIVATE ole32)
+endif()
 
 

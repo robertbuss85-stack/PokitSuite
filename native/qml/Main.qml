@@ -135,7 +135,41 @@ ApplicationWindow {
                         visible: !pokit.connected || !pokit.connected2 || pokit.meterUnit === pokit.meterUnit2
                         Connections { target:pokit;function onMeterHistoryChanged(){meterCanvas.requestPaint()} }
                         Connections { target:root;function onCh1Changed(){meterCanvas.requestPaint()} function onCh2Changed(){meterCanvas.requestPaint()} }
-                        onPaint:{let c=getContext("2d"),a=pokit.meterHistory,b=pokit.meterHistory2;c.reset();c.strokeStyle="#2a3e4b";for(let i=0;i<5;i++){let y=i*height/4;c.beginPath();c.moveTo(0,y);c.lineTo(width,y);c.stroke()}let all=a.concat(b);if(all.length<2)return;let lo=Math.min(...all),hi=Math.max(...all);if(lo===hi){lo--;hi++}function trace(v,color){if(v.length<2)return;c.strokeStyle=color;c.lineWidth=2;c.beginPath();for(let j=0;j<v.length;j++){let x=j*width/(v.length-1),y=(hi-v[j])*height/(hi-lo);j?c.lineTo(x,y):c.moveTo(x,y)}c.stroke()}trace(a,root.ch1);trace(b,root.ch2)}
+                        onPaint: {
+                            const c = getContext("2d")
+                            const first = pokit.meterHistory
+                            const second = pokit.meterHistory2
+                            c.reset()
+                            c.strokeStyle = "#2a3e4b"
+                            for (let i = 0; i < 5; ++i) {
+                                const y = i * height / 4
+                                c.beginPath(); c.moveTo(0, y); c.lineTo(width, y); c.stroke()
+                            }
+                            const all = first.concat(second)
+                            if (all.length < 2) return
+                            let low = Math.min(...all)
+                            let high = Math.max(...all)
+                            if (low === high) { --low; ++high }
+                            function trace(values, color) {
+                                if (values.length < 2) return
+                                c.strokeStyle = color
+                                c.lineWidth = 2
+                                c.lineJoin = "bevel"
+                                c.beginPath()
+                                for (let i = 0; i < values.length; ++i) {
+                                    const x = i * width / (values.length - 1)
+                                    const y = (high - values[i]) * height / (high - low)
+                                    if (i === 0) c.moveTo(x, y)
+                                    else c.lineTo(x, y)
+                                    if (i > 0) {
+                                        c.stroke(); c.beginPath(); c.moveTo(x, y)
+                                    }
+                                }
+                                c.stroke()
+                            }
+                            trace(first, root.ch1)
+                            trace(second, root.ch2)
+                        }
                     }
                     Label {
                         visible: !meterCanvas.visible && pokit.connected && pokit.connected2
@@ -171,6 +205,7 @@ ApplicationWindow {
                                 Connections { target:root;function onCh1Changed(){scopeCanvas.requestPaint()} function onCh2Changed(){scopeCanvas.requestPaint()} }
                                 onWidthChanged:requestPaint();onHeightChanged:requestPaint()
                                 onPaint:{
+                                    const paintStarted = Date.now()
                                     let c=getContext("2d"),a=pokit.scopeSamples,b=pokit.scopeSamples2;c.reset();c.fillStyle="#07100b";c.fillRect(0,0,width,height);c.strokeStyle="#294a34";c.lineWidth=1
                                     for(let i=0;i<=10;i++){let x=i*width/10;c.beginPath();c.moveTo(x,0);c.lineTo(x,height);c.stroke();for(let m=1;m<5&&i<10;m++){let xx=x+m*width/50;c.fillStyle="#25402f";c.fillRect(xx,height/2-2,1,5)}}
                                     for(let k=0;k<=8;k++){let y=k*height/8;c.beginPath();c.moveTo(0,y);c.lineTo(width,y);c.stroke();for(let n=1;n<5&&k<8;n++){let yy=y+n*height/40;c.fillStyle="#25402f";c.fillRect(width/2-2,yy,5,1)}}
@@ -181,9 +216,15 @@ ApplicationWindow {
                                     let saved=pokit.referenceSamples
                                     function trace(values, color, alpha, sampleRate, triggerSample) {
                                         if (values.length < 2) return
+                                        c.save()
+                                        c.beginPath()
+                                        c.rect(0, 0, width, height)
+                                        c.clip()
                                         c.globalAlpha = alpha
                                         c.strokeStyle = color
                                         c.lineWidth = 2
+                                        c.lineJoin = "bevel"
+                                        c.lineCap = "butt"
                                         c.beginPath()
                                         for (let i = 0; i < values.length; ++i) {
                                             const x = sampleRate > 0
@@ -192,13 +233,21 @@ ApplicationWindow {
                                             const y = height / 2 - ((values[i] - root.verticalPosition) / root.voltsDiv) * height / 8
                                             if (i === 0) c.moveTo(x, y)
                                             else c.lineTo(x, y)
+                                            // Bound rasterizer work for noisy, self-intersecting
+                                            // waveforms while keeping adjacent segments connected.
+                                            if (i > 0) {
+                                                c.stroke()
+                                                c.beginPath()
+                                                c.moveTo(x, y)
+                                            }
                                         }
                                         c.stroke()
-                                        c.globalAlpha = 1
+                                        c.restore()
                                     }
                                     if (pokit.scopeTriggerSource === 0) trace(saved, root.reference, .72, 0, 0)
                                     trace(b, root.ch2, 1, pokit.scopeRfPair ? pokit.scopeSampleRate2 : 0, pokit.scopeRfTriggerSample2)
                                     trace(a, root.ch1, 1, pokit.scopeRfPair ? pokit.scopeSampleRate : 0, pokit.scopeRfTriggerSample)
+                                    if (Date.now() - paintStarted > 100) console.warn("Scope paint took", Date.now() - paintStarted, "ms")
                                 }
                                 MouseArea { anchors.fill:parent;acceptedButtons:Qt.NoButton
                                     onWheel:function(wheel){root.setTimebaseIndex(timeBox.currentIndex+(wheel.angleDelta.y>0?-1:1));wheel.accepted=true}

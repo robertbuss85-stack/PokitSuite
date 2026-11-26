@@ -13,6 +13,8 @@ All notable public changes are documented here. The project follows semantic ver
 
 ### Fixed
 
+- Keep Bluetooth operations off the UI thread and pass coalesced measurement snapshots to QML
+- Bound curve rasterization work for noisy signals by drawing short connected paths
 - Recreate invalid GATT service objects after a Bluetooth disconnect
 - Avoid unnecessary DSO characteristic-value discovery on Windows
 

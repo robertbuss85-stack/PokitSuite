@@ -1,4 +1,4 @@
-#include "pokitcontroller.h"
+#include "pokitbridge.h"
 
 #include <QGuiApplication>
 #include <QDir>
@@ -8,6 +8,9 @@
 #include <QQuickStyle>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QElapsedTimer>
+#include <QDebug>
+#include <QtMath>
 
 int main(int argc, char *argv[])
 {
@@ -19,17 +22,17 @@ int main(int argc, char *argv[])
     if (!instanceLock.tryLock(100)) return 0;
     QQuickStyle::setStyle(QStringLiteral("Basic"));
 
-    PokitController controller;
+    PokitBridge controller;
     if (app.arguments().contains(QStringLiteral("--scope-test"))) {
         controller.showScope();
     }
     if (app.arguments().contains(QStringLiteral("--cycle-test"))) {
-        QTimer::singleShot(25000, &controller, &PokitController::showScope);
-        QTimer::singleShot(55000, &controller, &PokitController::showMultimeter);
-        QTimer::singleShot(75000, &controller, &PokitController::showScope);
+        QTimer::singleShot(25000, &controller, &PokitBridge::showScope);
+        QTimer::singleShot(55000, &controller, &PokitBridge::showMultimeter);
+        QTimer::singleShot(75000, &controller, &PokitBridge::showScope);
     }
     if (app.arguments().contains(QStringLiteral("--timebase-test"))) {
-        QTimer::singleShot(15000, &controller, &PokitController::showScope);
+        QTimer::singleShot(15000, &controller, &PokitBridge::showScope);
         QTimer::singleShot(25000, &controller, [&controller] {
             controller.setScopeConfig(QStringLiteral("DC"), 1.0, 100); // 100 µs/div
         });
@@ -41,9 +44,44 @@ int main(int argc, char *argv[])
         });
     }
     QQmlApplicationEngine engine;
+    controller.setScriptEngine(&engine);
     engine.rootContext()->setContextProperty(QStringLiteral("pokit"), &controller);
     engine.loadFromModule(QStringLiteral("PokitSuite"), QStringLiteral("Main"));
     if (engine.rootObjects().isEmpty()) return 1;
+    if (app.arguments().contains(QStringLiteral("--ui-monitor"))) {
+        auto *heartbeat = new QTimer(&app);
+        auto timing = std::make_shared<QElapsedTimer>();
+        timing->start();
+        heartbeat->setInterval(1000);
+        QObject::connect(heartbeat, &QTimer::timeout, &app, [timing] {
+            qInfo() << "UI heartbeat:" << timing->restart() << "ms";
+        });
+        heartbeat->start();
+    }
+    if (app.arguments().contains(QStringLiteral("--ui-responsiveness-test"))) {
+        auto *heartbeat = new QTimer(&app);
+        auto timing = std::make_shared<QElapsedTimer>();
+        auto largestGap = std::make_shared<qint64>(0);
+        timing->start();
+        heartbeat->setInterval(20);
+        const auto trace = engine.newArray(1000);
+        auto waveform = trace;
+        for (int index = 0; index < 1000; ++index)
+            waveform.setProperty(index, qSin(index * 1.7123) * 7.0);
+        QObject::connect(heartbeat, &QTimer::timeout, &app, [timing, largestGap, waveform, &controller] {
+            *largestGap = qMax(*largestGap, timing->restart());
+            controller.insert(QStringLiteral("activeFeature"), QStringLiteral("scope"));
+            controller.insert(QStringLiteral("scopeSamples"), QVariant::fromValue(waveform));
+            controller.insert(QStringLiteral("scopeSamples2"), QVariant::fromValue(waveform));
+            emit controller.scopeSamplesChanged();
+        });
+        heartbeat->start();
+        controller.post([](auto *) { QThread::msleep(2000); });
+        QTimer::singleShot(2300, &app, [largestGap, &app] {
+            qInfo() << "UI heartbeat maximum gap during 2000 ms worker stall:" << *largestGap << "ms";
+            app.exit(*largestGap < 250 ? 0 : 2);
+        });
+    }
     return app.exec();
 }
 

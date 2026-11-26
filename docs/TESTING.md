@@ -11,6 +11,8 @@ cmake --build native/build --parallel
 
 CI performs a clean Windows native build and an offline MCP handshake/tool-schema test. It cannot validate Bluetooth timing or analog accuracy without physical hardware.
 
+For the UI regression check, run `PokitSuiteNative.exe --ui-responsiveness-test` with no other instance open. It draws two 1,000-point jagged traces while the device worker is deliberately stalled for two seconds. Exit code 0 requires the UI heartbeat to stay below 250 ms. `--ui-monitor` logs a one-second UI heartbeat during live measurements.
+
 ## Hardware smoke test
 
 Before a release candidate is considered hardware-tested:
