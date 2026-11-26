@@ -4,7 +4,7 @@
 [![Pages](https://github.com/robertbuss85-stack/PokitSuite/actions/workflows/pages.yml/badge.svg)](https://github.com/robertbuss85-stack/PokitSuite/actions/workflows/pages.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 
-PokitSuite is a native Windows measurement application for Pokit Pro Bluetooth instruments. It combines a live digital multimeter,  digital storage oscilloscope, signal metrics, and an MCP interface for AI-assisted measurement and Arduino workflows.
+PokitSuite is a native Windows measurement application for Pokit Pro Bluetooth instruments. It combines a dual-device digital multimeter, a two-channel digital storage oscilloscope with native radio-triggered single acquisitions, signal metrics, and an MCP interface for AI-assisted measurement and Arduino workflows.
 
 **Technology:** The supported desktop application is written in **C++17 with Qt/QML**. Python is used only for the companion MCP server and the retained experimental legacy web fallback.
 
@@ -19,8 +19,9 @@ PokitSuite is a native Windows measurement application for Pokit Pro Bluetooth i
 | Area | Status | Notes |
 |---|---|---|
 | Pokit Pro discovery and BLE reconnect | Implemented, hardware-tested | Automatic reconnect, watchdogs, feature activation and wake traffic |
-| Dual-device digital multimeter | Implemented; CH1 hardware-tested | Automatic discovery, independent BLE watchdogs, 0.5 s / 1 s intervals and two live histories |
-| Two-channel DSO | Implemented; CH1 hardware-tested | Concurrent CH1/CH2 acquisition, continuous/single acquisition, coupling, V/div, time/div and trigger controls |
+| Dual-device digital multimeter | Implemented, live DC voltage tested on two Pokit Pro devices | Automatic discovery, independent BLE watchdogs, 0.5 s / 1 s intervals and two live histories |
+| Two-channel DSO | Implemented, acquisition tested on two Pokit Pro devices | Concurrent CH1/CH2 acquisition, continuous/single acquisition, coupling, V/div, time/div and trigger controls |
+| Native radio trigger | Implemented, live acquisition tested | Select CH1 or CH2 as trigger master, receive matching 1,000-sample pairs, and align using device trigger metadata. Absolute timing accuracy remains unmeasured. |
 | Signal metrics | Implemented, hardware-tested | Min, max, mean, RMS, Vpp, frequency, period, cycles and duty cycle |
 | Capture reports and comparison curves | Implemented, hardware-tested | PDF report, CSV value table, JSON waveform archive and selectable overlay |
 | MCP measurement tools | Implemented, protocol-tested | 17 tools over stdio; live values require a running native app |
@@ -37,6 +38,14 @@ PokitSuite is a native Windows measurement application for Pokit Pro Bluetooth i
 4. Run `PokitSuiteNative.exe`; the active measurement page starts automatically after connection.
 
 Windows 10/11 x64 and a Bluetooth Low Energy adapter are required. Pokit Pro is the tested device. Pokit Meter support exists in the underlying Dokit library but has not yet been validated in PokitSuite.
+
+## Radio-triggered two-channel capture
+
+Connect two Pokit Pro devices and open **Oszilloskop**. In **TRIGGER → Quelle**, select **CH1 · Funk** or **CH2 · Funk**. Choose **Sofort**, **Steigend** or **Fallend**, set the trigger threshold, then press **SINGLE**. The radio mode currently provides paired single acquisitions, with 1,000 samples per channel and a minimum timebase of **100 µs/div**.
+
+PokitSuite arms the follower, waits for the acknowledged settings write, and then arms the master. Each acquisition uses a fresh radio group. Both complete records must report the expected roles, group and matching acquisition number before the app displays the pair. Curves use each device's sample rate and trigger sample on a common trigger axis.
+
+Live tests passed with either device as the master, repeated immediate captures, a rising-edge capture with trigger sample 500 on both devices, and stop/re-arm. A shared reference signal is still needed to measure channel skew and jitter and establish the usable speed range for an A/B encoder. The test procedure is in [Testing](docs/TESTING.md).
 
 ## Build from source
 

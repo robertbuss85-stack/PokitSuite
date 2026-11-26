@@ -152,6 +152,13 @@ ApplicationWindow {
                     Rectangle { Layout.fillWidth:true;Layout.fillHeight:true;color:"#090d0b";border.color:"#525d54";border.width:5;radius:5
                         ColumnLayout { anchors.fill:parent;anchors.margins:7;spacing:3
                             RowLayout { Layout.fillWidth:true
+                                Label {
+                                    visible: pokit.connected2 || pokit.scopeTriggerSource > 0
+                                    text: pokit.scopeRfPair ? "FUNK · CH" + pokit.scopeTriggerSource + " · Aufnahmepaar"
+                                          : pokit.scopeTriggerSource > 0 ? "FUNK · CH" + pokit.scopeTriggerSource
+                                          : "Kanäle unabhängig"
+                                    color: pokit.scopeRfPair ? "#7eff8c" : "#b9c6bc"
+                                }
                                 Item { Layout.fillWidth:true }
                                 Label { text:pokit.scopeRunning?"● ACQUIRE":"■ STOP";color:pokit.scopeRunning?"#7eff8c":"#ffb56b";font.bold:true }
                                 Label { text:pokit.scopeSampleRate>0?Math.round(pokit.scopeSampleRate/1000)+" kS/s":"— kS/s";color:"#b9c6bc" }
@@ -168,11 +175,30 @@ ApplicationWindow {
                                     for(let i=0;i<=10;i++){let x=i*width/10;c.beginPath();c.moveTo(x,0);c.lineTo(x,height);c.stroke();for(let m=1;m<5&&i<10;m++){let xx=x+m*width/50;c.fillStyle="#25402f";c.fillRect(xx,height/2-2,1,5)}}
                                     for(let k=0;k<=8;k++){let y=k*height/8;c.beginPath();c.moveTo(0,y);c.lineTo(width,y);c.stroke();for(let n=1;n<5&&k<8;n++){let yy=y+n*height/40;c.fillStyle="#25402f";c.fillRect(width/2-2,yy,5,1)}}
                                     c.strokeStyle="#67806d";c.beginPath();c.moveTo(width/2,0);c.lineTo(width/2,height);c.stroke();c.beginPath();c.moveTo(0,height/2);c.lineTo(width,height/2);c.stroke()
-                                    let tx=root.triggerPosition*width;c.fillStyle="#ff8c42";c.beginPath();c.moveTo(tx-7,0);c.lineTo(tx+7,0);c.lineTo(tx,10);c.closePath();c.fill()
+                                    const triggerFraction = pokit.scopeRfPair ? pokit.scopeRfTriggerFraction : root.triggerPosition
+                                    let tx=triggerFraction*width;c.fillStyle="#ff8c42";c.beginPath();c.moveTo(tx-7,0);c.lineTo(tx+7,0);c.lineTo(tx,10);c.closePath();c.fill()
                                     let zero=height/2-root.verticalPosition/root.voltsDiv*height/8;c.fillStyle=root.ch1;c.beginPath();c.moveTo(0,zero);c.lineTo(10,zero-6);c.lineTo(10,zero+6);c.closePath();c.fill()
                                     let saved=pokit.referenceSamples
-                                    function trace(v,color,alpha){if(v.length<2)return;c.globalAlpha=alpha;c.strokeStyle=color;c.lineWidth=2;c.beginPath();for(let q=0;q<v.length;q++){let x=q*width/(v.length-1),y=height/2-((v[q]-root.verticalPosition)/root.voltsDiv)*height/8;q?c.lineTo(x,y):c.moveTo(x,y)}c.stroke();c.globalAlpha=1}
-                                    trace(saved,root.reference,.72);trace(b,root.ch2,1);trace(a,root.ch1,1)
+                                    function trace(values, color, alpha, sampleRate, triggerSample) {
+                                        if (values.length < 2) return
+                                        c.globalAlpha = alpha
+                                        c.strokeStyle = color
+                                        c.lineWidth = 2
+                                        c.beginPath()
+                                        for (let i = 0; i < values.length; ++i) {
+                                            const x = sampleRate > 0
+                                                ? tx + (i - triggerSample) * width * 1e6 / (sampleRate * pokit.scopeRfWindowUs)
+                                                : i * width / (values.length - 1)
+                                            const y = height / 2 - ((values[i] - root.verticalPosition) / root.voltsDiv) * height / 8
+                                            if (i === 0) c.moveTo(x, y)
+                                            else c.lineTo(x, y)
+                                        }
+                                        c.stroke()
+                                        c.globalAlpha = 1
+                                    }
+                                    if (pokit.scopeTriggerSource === 0) trace(saved, root.reference, .72, 0, 0)
+                                    trace(b, root.ch2, 1, pokit.scopeRfPair ? pokit.scopeSampleRate2 : 0, pokit.scopeRfTriggerSample2)
+                                    trace(a, root.ch1, 1, pokit.scopeRfPair ? pokit.scopeSampleRate : 0, pokit.scopeRfTriggerSample)
                                 }
                                 MouseArea { anchors.fill:parent;acceptedButtons:Qt.NoButton
                                     onWheel:function(wheel){root.setTimebaseIndex(timeBox.currentIndex+(wheel.angleDelta.y>0?-1:1));wheel.accepted=true}
@@ -183,7 +209,7 @@ ApplicationWindow {
                                 Label { text:root.engineeringVoltage(root.voltsDiv);color:root.ch1;font.bold:true }
                                 Label { visible:pokit.connected2;text:"CH2";color:"#07100b";font.bold:true;padding:4;background:Rectangle{color:root.ch2;radius:2} }
                                 Item { Layout.fillWidth:true }
-                                Label { text:"M  "+root.engineeringTime(root.timeDivUs);color:"#d8e0d9";font.bold:true }
+                                Label { text:"M  "+root.engineeringTime(pokit.scopeRfPair ? pokit.scopeRfWindowUs / 10 : root.timeDivUs);color:"#d8e0d9";font.bold:true }
                                 Item { Layout.fillWidth:true }
                                 Label { text:"Trig "+triggerMode.currentText+"  "+(triggerLevel.value/100).toFixed(2)+" V";color:"#ff9b58";font.bold:true }
                             }
@@ -207,13 +233,23 @@ ApplicationWindow {
                                     ColumnLayout { anchors.fill:parent
                                         RowLayout { Label{text:"Zeit / Div";Layout.fillWidth:true} ComboBox{id:timeBox;model:["10 µs","20 µs","50 µs","100 µs","200 µs","500 µs","1 ms","2 ms","5 ms","10 ms","20 ms","50 ms","100 ms","200 ms","500 ms","1 s"];currentIndex:9;onActivated:root.setTimebaseIndex(currentIndex)} }
                                         Label { text:"Triggerposition" }
-                                        Slider { Layout.fillWidth:true;from:.1;to:.9;value:.5;onMoved:{root.triggerPosition=value;scopeCanvas.requestPaint()} }
+                                        Slider { Layout.fillWidth:true;from:.1;to:.9;value:.5
+                                            onMoved:{root.triggerPosition=value;pokit.setScopeTriggerPosition(value);scopeCanvas.requestPaint()}
+                                        }
                                     }
                                 }
                                 GroupBox { title:"TRIGGER";Layout.fillWidth:true
                                     ColumnLayout { anchors.fill:parent
-                                        RowLayout { Label{text:"Modus";Layout.fillWidth:true} ComboBox{id:triggerMode;model:["Auto","Steigend","Fallend"];onActivated:pokit.setScopeTrigger(["free","rising","falling"][currentIndex],triggerLevel.value/100)} }
-                                        RowLayout { Label{text:"Quelle";Layout.fillWidth:true} ComboBox{model:pokit.connected2?["je Kanal (CH1 + CH2)"]:["CH1"];enabled:false} }
+                                        RowLayout { Label{text:"Modus";Layout.fillWidth:true} ComboBox{id:triggerMode;model:["Auto / Sofort","Steigend","Fallend"];displayText:currentIndex===0?(pokit.scopeTriggerSource>0?"Sofort":"Auto"):currentText;onActivated:pokit.setScopeTrigger(["free","rising","falling"][currentIndex],triggerLevel.value/100)} }
+                                        RowLayout {
+                                            Label { text:"Quelle"; Layout.fillWidth:true }
+                                            ComboBox {
+                                                model: ["Je Kanal", "CH1 · Funk", "CH2 · Funk"]
+                                                currentIndex: pokit.scopeTriggerSource
+                                                enabled: pokit.connected2 || pokit.scopeTriggerSource > 0
+                                                onActivated: pokit.setScopeTriggerSource(currentIndex)
+                                            }
+                                        }
                                         Label { text:"Pegel  "+(triggerLevel.value/100).toFixed(2)+" V" }
                                         Slider { id:triggerLevel;Layout.fillWidth:true;from:-400;to:400;value:0;stepSize:1;onMoved:pokit.setScopeTrigger(["free","rising","falling"][triggerMode.currentIndex],value/100) }
                                     }
@@ -233,8 +269,17 @@ ApplicationWindow {
                                     }
                                 }
                                 RowLayout { Layout.fillWidth:true
-                                    Button { text:pokit.scopeRunning?"STOP":"RUN";Layout.fillWidth:true;onClicked:pokit.setScopeRunning(!pokit.scopeRunning) }
-                                    Button { text:"SINGLE";Layout.fillWidth:true;onClicked:pokit.scopeSingle() }
+                                    Button {
+                                        text:pokit.scopeRunning?"STOP":"RUN"
+                                        enabled: pokit.scopeTriggerSource === 0 || pokit.scopeRunning
+                                        Layout.fillWidth:true
+                                        onClicked:pokit.setScopeRunning(!pokit.scopeRunning)
+                                    }
+                                    Button {
+                                        text:"SINGLE";Layout.fillWidth:true
+                                        enabled: pokit.scopeTriggerSource === 0 || (pokit.scopeRfReady && !pokit.scopeRunning)
+                                        onClicked:pokit.scopeSingle()
+                                    }
                                 }
                             }
                         }

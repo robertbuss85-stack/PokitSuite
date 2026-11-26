@@ -15,6 +15,7 @@
 #include <QBluetoothAddress>
 #include <QBluetoothUuid>
 #include <QVersionNumber>
+#include <optional>
 
 QTPOKIT_BEGIN_NAMESPACE
 
@@ -45,9 +46,17 @@ public:
         FreeRunning        = 0, ///< Run free, without waiting for edge triggers.
         RisingEdgeTrigger  = 1, ///< Trigger on a rising edge.
         FallingEdgeTrigger = 2, ///< Trigger on a falling edge.
-        ResendData         = 3  ///< Resend the last acquired data.
+        ResendData         = 3, ///< Resend the last acquired data.
+        Stop               = 8  ///< Stop acquisition using extended Pokit Pro settings.
     };
     static QString toString(const Command &command);
+
+    /// Radio trigger role in the extended Pokit Pro settings packet.
+    enum class SyncRole : quint8 {
+        Independent = 0,
+        Master      = 1,
+        Follower    = 2
+    };
 
     /// Values supported by the `Mode` attribute of the `Settings` and `Metadata` characteristics.
     enum class Mode : quint8 {
@@ -90,6 +99,10 @@ public:
         quint32 samplingWindow;  ///< Sampling window (microseconds) used during last acquisition.
         quint16 numberOfSamples; ///< Number of samples acquired (1 to 8,192|16,384 for Pokit Meter|Pro).
         quint32 samplingRate;    ///< Sampling rate used during last acquisition (1 to 1MHz).
+        std::optional<quint16> triggerSample{}; ///< Trigger origin in the acquired samples.
+        std::optional<SyncRole> syncRole{};     ///< Radio role reported by the device.
+        std::optional<quint8> syncGroup{};      ///< Radio group reported by the device.
+        std::optional<quint8> captureSequence{}; ///< Counter shared by matching radio-triggered frames.
     };
 
     typedef QVector<qint16> Samples;
@@ -102,6 +115,8 @@ public:
 
     // Settings characteristic (BLE write only).
     bool setSettings(const Settings &settings);
+    bool setSynchronizedSettings(const Settings &settings, quint16 triggerSample,
+                                 SyncRole role, quint8 group);
     bool startDso(const Settings &settings);
     bool fetchSamples();
 
@@ -116,6 +131,7 @@ public:
 
 Q_SIGNALS:
     void settingsWritten();
+    void synchronizedSettingsWritten(DsoService::SyncRole role, quint8 group);
     void metadataRead(const DsoService::Metadata &meta);
     void samplesRead(const DsoService::Samples &samples);
 
@@ -125,6 +141,8 @@ protected:
     /// \endcond
 
 private:
+    static QByteArray encodeSynchronizedSettings(const Settings &settings, quint16 triggerSample,
+                                                 SyncRole role, quint8 group);
     Q_DECLARE_PRIVATE(DsoService)
     Q_DISABLE_COPY(DsoService)
     QTPOKIT_BEFRIEND_TEST(DsoService)

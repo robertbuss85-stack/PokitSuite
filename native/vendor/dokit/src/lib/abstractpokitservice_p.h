@@ -69,6 +69,7 @@ protected Q_SLOTS:
                                        const QByteArray &newValue);
 
 private:
+    void discardService();
     Q_DECLARE_PUBLIC(AbstractPokitService)
     Q_DISABLE_COPY(AbstractPokitServicePrivate)
     QTPOKIT_BEFRIEND_TEST(AbstractPokitService)

@@ -12,6 +12,7 @@
 #include "../stringliterals_p.h"
 
 #include <qtpokit/pokitdevice.h>
+#include <qtpokit/dsoservice.h>
 #include <qtpokit/multimeterservice.h>
 #include <qtpokit/statusservice.h>
 
@@ -178,6 +179,8 @@ AbstractPokitServicePrivate::AbstractPokitServicePrivate(const QBluetoothUuid &s
     if (controller) {
         connect(controller, &QLowEnergyController::connected,
                 this, &AbstractPokitServicePrivate::connected);
+        connect(controller, &QLowEnergyController::disconnected,
+                this, &AbstractPokitServicePrivate::discardService);
 
         connect(controller, &QLowEnergyController::discoveryFinished,
                 this, &AbstractPokitServicePrivate::discoveryFinished);
@@ -187,6 +190,15 @@ AbstractPokitServicePrivate::AbstractPokitServicePrivate(const QBluetoothUuid &s
 
         createServiceObject();
     }
+}
+
+void AbstractPokitServicePrivate::discardService()
+{
+    if (!service) return;
+    auto *oldService = service;
+    service = nullptr;
+    disconnect(oldService, nullptr, this, nullptr);
+    oldService->deleteLater();
 }
 
 /*!
@@ -251,9 +263,9 @@ bool AbstractPokitServicePrivate::createServiceObject()
 
     if (autoDiscover) {
 #ifdef Q_OS_WIN
-        // PokitSuite reads these values explicitly. Avoid WinRT probing
+        // PokitSuite reads or subscribes to these values explicitly. Avoid WinRT probing
         // every readable attribute while both instruments connect.
-        if (serviceUuid == MultimeterService::serviceUuid
+        if (serviceUuid == DsoService::serviceUuid || serviceUuid == MultimeterService::serviceUuid
             || serviceUuid == StatusService::ServiceUuids::pokitPro) {
             service->discoverDetails(QLowEnergyService::SkipValueDiscovery);
             return true;
@@ -528,6 +540,13 @@ void AbstractPokitServicePrivate::serviceDiscovered(const QBluetoothUuid &newSer
 void AbstractPokitServicePrivate::stateChanged(QLowEnergyService::ServiceState newState)
 {
     qCDebug(lc).noquote() << tr("State changed to") << newState;
+
+    if (newState == QLowEnergyService::InvalidService) {
+        // The next connection needs a new GATT service object. Keeping this
+        // pointer suppresses creation when the service is discovered again.
+        discardService();
+        return;
+    }
 
     if (lc().isDebugEnabled()) {
         for (const auto &characteristic: service->characteristics()) {

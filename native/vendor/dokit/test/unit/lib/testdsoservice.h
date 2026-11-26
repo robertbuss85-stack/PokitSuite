@@ -40,6 +40,7 @@ private slots:
 
     void encodeSettings_data();
     void encodeSettings();
+    void encodeSynchronizedSettings();
 
     void parseMetadata_data();
     void parseMetadata();

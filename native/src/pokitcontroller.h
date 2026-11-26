@@ -40,6 +40,14 @@ class PokitController final : public QObject
     Q_PROPERTY(QVariantList scopeSamples READ scopeSamples NOTIFY scopeSamplesChanged)
     Q_PROPERTY(QVariantList scopeSamples2 READ scopeSamples2 NOTIFY scopeSamplesChanged)
     Q_PROPERTY(bool scopeRunning READ scopeRunning NOTIFY scopeStateChanged)
+    Q_PROPERTY(int scopeTriggerSource READ scopeTriggerSource NOTIFY scopeStateChanged)
+    Q_PROPERTY(bool scopeRfReady READ scopeRfReady NOTIFY scopeStateChanged)
+    Q_PROPERTY(bool scopeRfPair READ scopeRfPair NOTIFY scopeStateChanged)
+    Q_PROPERTY(int scopeRfTriggerSample READ scopeRfTriggerSample NOTIFY scopeStateChanged)
+    Q_PROPERTY(int scopeRfTriggerSample2 READ scopeRfTriggerSample2 NOTIFY scopeStateChanged)
+    Q_PROPERTY(int scopeRfWindowUs READ scopeRfWindowUs NOTIFY scopeStateChanged)
+    Q_PROPERTY(double scopeRfTriggerFraction READ scopeRfTriggerFraction NOTIFY scopeStateChanged)
+    Q_PROPERTY(double scopeSampleRate2 READ scopeSampleRate2 NOTIFY scopeStateChanged)
     Q_PROPERTY(double scopeSampleRate READ scopeSampleRate NOTIFY scopeStateChanged)
     Q_PROPERTY(double scopeVpp READ scopeVpp NOTIFY scopeMetricsChanged)
     Q_PROPERTY(double scopeMinimum READ scopeMinimum NOTIFY scopeMetricsChanged)
@@ -82,7 +90,18 @@ public:
     QVariantList scopeSamples() const;
     QVariantList scopeSamples2() const;
     bool scopeRunning() const { return m_scopeRunning; }
+    int scopeTriggerSource() const { return m_scopeTriggerSource; }
+    bool scopeRfReady() const;
+    bool scopeRfPair() const { return m_scopeRfPair; }
+    int scopeRfTriggerSample() const { return m_scopeMetadata.triggerSample.value_or(0); }
+    int scopeRfTriggerSample2() const { return m_scopeMetadata2.triggerSample.value_or(0); }
+    double scopeRfTriggerFraction() const {
+        return m_rfSettings.numberOfSamples
+            ? double(m_scopeRfTriggerSample) / m_rfSettings.numberOfSamples : 0.0;
+    }
+    int scopeRfWindowUs() const { return int(m_rfSettings.samplingWindow); }
     double scopeSampleRate() const { return m_scopeMetadata.samplingRate; }
+    double scopeSampleRate2() const { return m_scopeMetadata2.samplingRate; }
     double scopeVpp() const { return m_scopeVpp; }
     double scopeMinimum() const { return m_scopeMinimum; }
     double scopeMaximum() const { return m_scopeMaximum; }
@@ -109,6 +128,8 @@ public:
     Q_INVOKABLE void setMeterMode(int channel, const QString &mode);
     Q_INVOKABLE void setMeterInterval(int milliseconds);
     Q_INVOKABLE void setScopeTrigger(const QString &mode, double level);
+    Q_INVOKABLE void setScopeTriggerSource(int channel);
+    Q_INVOKABLE void setScopeTriggerPosition(double position);
     Q_INVOKABLE void setScopeConfig(const QString &coupling, double voltsPerDiv, int timePerDivUs);
     Q_INVOKABLE void setScopeRunning(bool running);
     Q_INVOKABLE void scopeSingle();
@@ -146,6 +167,14 @@ private:
     void startScope();
     void startMeter2();
     void startScope2();
+    DsoService::Settings scopeSettings() const;
+    void startRfCapture();
+    void stopRfCapture();
+    void clearRfPair();
+    void failRfCapture(const QString &message);
+    void onRfSettingsWritten(int channel, DsoService::SyncRole role, quint8 group);
+    void onRfMetadata(int channel, const DsoService::Metadata &metadata);
+    void onRfSamples(int channel, const DsoService::Samples &samples);
     void updateScopeMetrics();
     void updateScopeMetrics2();
     void publishAutomationState();
@@ -173,6 +202,7 @@ private:
     QTimer m_scopeWatchdog2;
     QTimer m_scopeRestartTimer;
     QTimer m_scopeRestartTimer2;
+    QTimer m_rfTimeout;
     QTimer m_automationTimer;
     QString m_status = QStringLiteral("Bereit");
     QString m_deviceName = QStringLiteral("Nicht verbunden");
@@ -204,6 +234,20 @@ private:
     bool m_scopeAccepting2 = false;
     bool m_scopeRunning = true;
     bool m_scopeSingle = false;
+    enum class RfStage { Idle, ArmingFollower, WaitingForFrames };
+    struct RfFrame {
+        std::optional<DsoService::Metadata> metadata;
+        QVector<double> values;
+    };
+    RfStage m_rfStage = RfStage::Idle;
+    RfFrame m_rfFrames[2];
+    DsoService::Settings m_rfSettings{};
+    int m_scopeTriggerSource = 0;
+    double m_scopeTriggerPosition = 0.5;
+    bool m_rfNotificationsReady[2]{};
+    bool m_scopeRfPair = false;
+    quint8 m_rfGroup = 0;
+    quint16 m_scopeRfTriggerSample = 0;
     double m_meterValue = 0.0;
     double m_meterValue2 = 0.0;
     double m_triggerLevel = 0.0;

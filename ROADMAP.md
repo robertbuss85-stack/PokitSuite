@@ -11,6 +11,8 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 - Whole-frame acquisition and min/max/mean/RMS/Vpp/frequency/period/cycles/duty metrics
 - Mouse-wheel horizontal timebase control
 - Local telemetry/command bridge and MCP measurement/configuration tools
+- Two-device DMM voltage readings and DSO acquisition
+- Native radio-triggered single captures with either Pokit Pro as master, matched frame numbers and shared trigger-axis rendering
 
 ## Implemented, protocol-tested, hardware-dependent
 
@@ -20,7 +22,8 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 
 ## Experimental / known limitations
 
-- CH1 is hardware-validated; CH2 acquisition is implemented and awaiting full hardware validation; CH3–CH4 remain placeholders
+- CH1 and CH2 acquisition are hardware-tested; CH3–CH4 remain placeholders
+- Radio-triggered single acquisitions are tested, while channel skew/jitter and the usable A/B encoder speed range still need reference measurements
 - Bluetooth behavior can vary with Windows adapter/driver and competing Pokit clients
 - Frequency/duty estimates need clean crossings and sufficient cycles
 - Arduino end-to-end autonomous repair is not validated for every board/core
@@ -39,7 +42,7 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 
 ### Later
 
-- Extend the implemented two-device acquisition to CH3/CH4 and add cross-device time alignment
+- Extend native radio-triggered acquisition to CH3/CH4 and continuous capture
 - Cursor measurements, protocol-oriented views and richer trigger types
 - Cross-platform validation on Linux and macOS where BLE support permits
 - Guardrailed AI diagnosis recipes and repeatable hardware-in-the-loop tests

@@ -34,6 +34,7 @@ QString DsoService::toString(const Command &command)
     case Command::RisingEdgeTrigger:  return tr("Rising edge trigger");
     case Command::FallingEdgeTrigger: return tr("Falling edge trigger");
     case Command::ResendData:         return tr("Resend data");
+    case Command::Stop:               return tr("Stop");
     default:                          return QString();
     }
 }
@@ -179,6 +180,42 @@ bool DsoService::setSettings(const Settings &settings)
 
     d->service->writeCharacteristic(characteristic, value);
     return (d->service->error() != QLowEnergyService::ServiceError::CharacteristicWriteError);
+}
+
+/*!
+ * Queues a 17-byte Pokit Pro DSO settings write. The legacy settings are followed by
+ * the little-endian trigger sample, radio role and synchronization group. Use
+ * synchronizedSettingsWritten() to wait for the follower's write acknowledgement before starting
+ * the master. The same extended packet with command Stop disarms a device.
+ */
+bool DsoService::setSynchronizedSettings(const Settings &settings, quint16 triggerSample,
+                                          SyncRole role, quint8 group)
+{
+    if (pokitProduct() != PokitProduct::PokitPro || settings.range == 255
+        || triggerSample > settings.numberOfSamples) {
+        return false;
+    }
+
+    Q_D(const DsoService);
+    const auto characteristic = d->getCharacteristic(CharacteristicUuids::settings);
+    if (!characteristic.isValid() || !characteristic.properties().testFlag(QLowEnergyCharacteristic::Write)) {
+        return false;
+    }
+
+    const QByteArray value = encodeSynchronizedSettings(settings, triggerSample, role, group);
+    d->service->writeCharacteristic(characteristic, value, QLowEnergyService::WriteWithResponse);
+    return true;
+}
+
+QByteArray DsoService::encodeSynchronizedSettings(const Settings &settings, quint16 triggerSample,
+                                                  SyncRole role, quint8 group)
+{
+    QByteArray value = DsoServicePrivate::encodeSettings(settings);
+    QDataStream stream(&value, QIODevice::Append);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream << triggerSample << static_cast<quint8>(role) << group;
+    Q_ASSERT(value.size() == 17);
+    return value;
 }
 
 /*!
@@ -368,9 +405,8 @@ DsoService::Metadata DsoServicePrivate::parseMetadata(const QByteArray &value)
         DsoService::Mode::Idle, 0, 0, 0, 0
     };
 
-    // Pokit Pro firmware 2.x appends five undocumented bytes to the original
-    // 17-byte DSO metadata record. The documented prefix is unchanged and is
-    // what we parse below. Accept both layouts without a false warning.
+    // Extended Pokit Pro records keep the original 17-byte metadata prefix.
+    // The final byte of a 22-byte record identifies the acquisition.
     if (!checkSize(u"Metadata"_s, value, 17, 22)) {
         return metadata;
     }
@@ -382,6 +418,17 @@ DsoService::Metadata DsoServicePrivate::parseMetadata(const QByteArray &value)
     metadata.samplingWindow  = qFromLittleEndian<quint32>(value.mid(7,4).constData());
     metadata.numberOfSamples = qFromLittleEndian<quint16>(value.mid(11,2).constData());
     metadata.samplingRate    = qFromLittleEndian<quint32>(value.mid(13,4).constData());
+    if (value.size() >= 21) {
+        metadata.triggerSample = qFromLittleEndian<quint16>(value.constData() + 17);
+        const auto role = static_cast<quint8>(value.at(19));
+        if (role <= static_cast<quint8>(DsoService::SyncRole::Follower)) {
+            metadata.syncRole = static_cast<DsoService::SyncRole>(role);
+        }
+        metadata.syncGroup = static_cast<quint8>(value.at(20));
+    }
+    if (value.size() == 22) {
+        metadata.captureSequence = static_cast<quint8>(value.at(21));
+    }
     return metadata;
 }
 
@@ -446,6 +493,10 @@ void DsoServicePrivate::characteristicWritten(const QLowEnergyCharacteristic &ch
     Q_Q(DsoService);
     if (characteristic.uuid() == DsoService::CharacteristicUuids::settings) {
         Q_EMIT q->settingsWritten();
+        if (newValue.size() == 17) {
+            const auto role = static_cast<DsoService::SyncRole>(newValue.at(15));
+            Q_EMIT q->synchronizedSettingsWritten(role, static_cast<quint8>(newValue.at(16)));
+        }
         return;
     }
 

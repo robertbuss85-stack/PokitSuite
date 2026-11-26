@@ -2,6 +2,26 @@
 
 All notable public changes are documented here. The project follows semantic versioning from its first public release.
 
+## Unreleased
+
+### Added
+
+- Native Pokit Pro radio-triggered single acquisitions with CH1 or CH2 as the trigger master
+- Acknowledged follower arming before master start, a fresh radio group for each shot, and atomic publication of complete frames with matching acquisition numbers
+- Trigger-origin and sampling-rate metadata for a shared display time axis
+- Radio master/follower/stop packet and legacy/extended metadata regression tests
+
+### Fixed
+
+- Recreate invalid GATT service objects after a Bluetooth disconnect
+- Avoid unnecessary DSO characteristic-value discovery on Windows
+
+### Validation
+
+- Windows native build, DSO protocol regression tests and MCP contract tests passed
+- Two physical Pokit Pro devices returned matching 1,000-sample captures with either channel as master, including repeated immediate captures, a rising-edge capture, and stop/re-arm
+- Channel skew, jitter and A/B encoder accuracy still require measurement against a shared reference signal. Radio mode currently supports single acquisitions from 100 µs/div.
+
 ## [0.3.0] - 2026-11-25
 
 ### Added

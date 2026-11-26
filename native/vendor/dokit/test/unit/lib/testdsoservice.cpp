@@ -30,6 +30,7 @@ void TestDsoService::toString_Command_data()
     DOKIT_ADD_TEST_ROW(RisingEdgeTrigger,  "Rising edge trigger");
     DOKIT_ADD_TEST_ROW(FallingEdgeTrigger, "Falling edge trigger");
     DOKIT_ADD_TEST_ROW(ResendData,         "Resend data");
+    DOKIT_ADD_TEST_ROW(Stop,               "Stop");
     #undef DOKIT_ADD_TEST_ROW
     QTest::addRow("invalid") << (DsoService::Command)5    << QString();
     QTest::addRow("max")     << (DsoService::Command)0xFF << QString();
@@ -264,6 +265,22 @@ void TestDsoService::encodeSettings()
     QCOMPARE(DsoServicePrivate::encodeSettings(settings), expected);
 }
 
+void TestDsoService::encodeSynchronizedSettings()
+{
+    using Command = DsoService::Command;
+    using Mode = DsoService::Mode;
+    using Role = DsoService::SyncRole;
+    const DsoService::Settings edge{Command::RisingEdgeTrigger, 1.0f, Mode::DcVoltage, 2, 1000, 1000};
+    QCOMPARE(DsoService::encodeSynchronizedSettings(edge, 500, Role::Follower, 5),
+             QByteArray::fromHex("010000803f0102e8030000e803f4010205"));
+    QCOMPARE(DsoService::encodeSynchronizedSettings(edge, 500, Role::Master, 5),
+             QByteArray::fromHex("010000803f0102e8030000e803f4010105"));
+
+    const DsoService::Settings stop{Command::Stop, 0.0f, Mode::Idle, 2, 5000, 1000};
+    QCOMPARE(DsoService::encodeSynchronizedSettings(stop, 500, Role::Independent, 0),
+             QByteArray::fromHex("0800000000000288130000e803f4010000"));
+}
+
 void TestDsoService::parseMetadata_data()
 {
     QTest::addColumn<QByteArray>("value");
@@ -290,13 +307,22 @@ void TestDsoService::parseMetadata_data()
            DsoService::Mode::AcVoltage, 0, 1*1000*1000, 10, 10
         };
 
-    // Sample from a real Pokit Pro device; note is has 4 extra unknown bytes.
+    // Sample from a real Pokit Pro device before the acquisition sequence was added.
     QTest::addRow("PokitPro")
         << QByteArray("\x00\xcc\xec\xba\x33\x02\x00\x40\x42\x0f\x00"
                       "\xe8\x03\x0a\x00\x00\x00\x14\x00\x00\x00", 21)
         << DsoService::Metadata{
               DsoService::DsoStatus::Done, 8.704373045e-08f,
-              DsoService::Mode::AcVoltage, 0, 1*1000*1000, 1000, 10
+              DsoService::Mode::AcVoltage, 0, 1*1000*1000, 1000, 10,
+              20, DsoService::SyncRole::Independent, 0, std::nullopt
+        };
+
+    QTest::addRow("PokitPro synchronized")
+        << QByteArray::fromHex("00ccecba330200e8030000e80340420f00f4010205ff")
+        << DsoService::Metadata{
+              DsoService::DsoStatus::Done, 8.704373045e-08f,
+              DsoService::Mode::AcVoltage, 0, 1000, 1000, 1000000,
+              500, DsoService::SyncRole::Follower, 5, 255
         };
 }
 
@@ -307,10 +333,6 @@ void TestDsoService::parseMetadata()
     if (value.size() < 17) {
         QTest::ignoreMessage(QtWarningMsg, QRegularExpression(
             uR"(^Metadata requires \d+ byte/s, but only \d+ present: 0x[a-zA-Z0-9,]*$)"_s));
-    }
-    if (value.size() > 17) {
-        QTest::ignoreMessage(QtWarningMsg, QRegularExpression(
-            uR"(^Metadata has \d+ extraneous byte/s: 0x[a-zA-Z0-9,]*$)"_s));
     }
     const DsoService::Metadata actual = DsoServicePrivate::parseMetadata(value);
     QCOMPARE(actual.status,             expected.status);
@@ -330,6 +352,10 @@ void TestDsoService::parseMetadata()
     QCOMPARE(actual.samplingWindow,     expected.samplingWindow);
     QCOMPARE(actual.numberOfSamples,    expected.numberOfSamples);
     QCOMPARE(actual.samplingRate,       expected.samplingRate);
+    QVERIFY(actual.triggerSample == expected.triggerSample);
+    QVERIFY(actual.syncRole == expected.syncRole);
+    QVERIFY(actual.syncGroup == expected.syncGroup);
+    QVERIFY(actual.captureSequence == expected.captureSequence);
 }
 
 void TestDsoService::parseSamples_data()
