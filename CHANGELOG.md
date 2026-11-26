@@ -6,6 +6,8 @@ All notable public changes are documented here. The project follows semantic ver
 
 ### Added
 
+- Draggable time and voltage cursors with trigger-relative time, voltage, signed differences and reciprocal time interval; independent visibility and reset controls
+- RUN/STOP for repeated radio-triggered acquisition pairs alongside SINGLE
 - Native Pokit Pro radio-triggered single acquisitions with CH1 or CH2 as the trigger master
 - Acknowledged follower arming before master start, a fresh radio group for each shot, and atomic publication of complete frames with matching acquisition numbers
 - Trigger-origin and sampling-rate metadata for a shared display time axis
@@ -13,6 +15,13 @@ All notable public changes are documented here. The project follows semantic ver
 
 ### Fixed
 
+- Replace the cramped scope readout with a fixed two-by-two channel grid, larger values and complete CH2 metrics (including period and cycles); reserve inactive CH3/CH4 slots
+- Restore saved comparison curves in radio-trigger mode and add explicit show/hide controls
+- Render saved curves using their recorded sample rate instead of stretching them across the display; preserve trigger origin for new radio captures
+- Preserve radio RUN across volts/div and time/div changes, applying settings between complete pairs
+- Restore 10–50 µs/div radio captures with reduced record length at 1 MS/s
+- Retry incomplete radio transfers and retain the last complete pair while waiting for new data
+- Bind scope controls to the active backend settings
 - Keep Bluetooth operations off the UI thread and pass coalesced measurement snapshots to QML
 - Bound curve rasterization work for noisy signals by drawing short connected paths
 - Recreate invalid GATT service objects after a Bluetooth disconnect
@@ -22,7 +31,7 @@ All notable public changes are documented here. The project follows semantic ver
 
 - Windows native build, DSO protocol regression tests and MCP contract tests passed
 - Two physical Pokit Pro devices returned matching 1,000-sample captures with either channel as master, including repeated immediate captures, a rising-edge capture, and stop/re-arm
-- Channel skew, jitter and A/B encoder accuracy still require measurement against a shared reference signal. Radio mode currently supports single acquisitions from 100 µs/div.
+- Channel skew, jitter and A/B encoder accuracy still require measurement against a shared reference signal. Immediate radio RUN was tested across changes to volts/div and 10–100 µs/div timebases. Rising/falling trigger capture remains under investigation after intermittent missing acquisitions.
 
 ## [0.3.0] - 2026-11-25
 

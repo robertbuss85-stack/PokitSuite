@@ -63,16 +63,81 @@ ApplicationWindow {
     readonly property var deviceColorNames: ["Rot", "Lichtgrau", "Gelb", "Grün"]
     readonly property var deviceColors: ["#ff6666", "#d3d3d3", "#ffd629", "#55df89"]
     property color reference: "#b78cff"
-    property real voltsDiv: 1.0
-    property int timeDivUs: 10000
+    property real voltsDiv: pokit.scopeVoltsPerDiv
+    property int timeDivUs: pokit.scopeTimePerDivUs
     property real verticalPosition: 0.0
     property real triggerPosition: 0.5
+    property bool timeCursorsVisible: true
+    property bool voltageCursorsVisible: true
+    property real cursorT1: 0.30
+    property real cursorT2: 0.70
+    property real cursorU1: 0.30
+    property real cursorU2: 0.70
+    readonly property real cursorWindowUs: pokit.scopeRfPair ? pokit.scopeRfWindowUs : timeDivUs * 10
+    readonly property real cursorTriggerFraction: pokit.scopeRfPair ? pokit.scopeRfTriggerFraction : triggerPosition
+    readonly property real cursorDeltaUs: (cursorT2 - cursorT1) * cursorWindowUs
+    readonly property real cursorDeltaV: (cursorU1 - cursorU2) * voltsDiv * 8
+
+    function cursorTime(us) {
+        const magnitude = Math.abs(us)
+        if (magnitude < 1000) return us.toFixed(2) + " µs"
+        if (magnitude < 1000000) return (us / 1000).toFixed(3) + " ms"
+        return (us / 1000000).toFixed(4) + " s"
+    }
+    function cursorVoltage(v) { return Math.abs(v) < 1 ? (v * 1000).toFixed(2) + " mV" : v.toFixed(3) + " V" }
+    function cursorFrequency() {
+        if (Math.abs(cursorDeltaUs) < 0.000001) return "—"
+        const hz = 1000000 / Math.abs(cursorDeltaUs)
+        return hz >= 1000 ? (hz / 1000).toFixed(3) + " kHz" : hz.toFixed(3) + " Hz"
+    }
     property var timeBases: [10,20,50,100,200,500,1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000]
 
     function engineeringTime(us) { if(us<1000)return us+" µs/div";if(us<1000000)return(us/1000)+" ms/div";return(us/1000000)+" s/div" }
     function engineeringVoltage(v) { return v<1?Math.round(v*1000)+" mV/div":v+" V/div" }
-    function setTimebaseIndex(index) { let i=Math.max(0,Math.min(timeBases.length-1,index));timeBox.currentIndex=i;root.timeDivUs=timeBases[i];pokit.setScopeConfig(coupling.currentText,root.voltsDiv,root.timeDivUs) }
+    function setTimebaseIndex(index) { let i=Math.max(0,Math.min(timeBases.length-1,index));pokit.setScopeConfig(coupling.currentText,root.voltsDiv,timeBases[i]) }
     function metricTime(seconds) { if(seconds<=0)return "—";if(seconds<.001)return(seconds*1000000).toFixed(1)+" µs";if(seconds<1)return(seconds*1000).toFixed(2)+" ms";return seconds.toFixed(2)+" s" }
+
+    component ScopeMetric: Column {
+        required property string caption
+        required property string reading
+        Layout.fillWidth:true
+        Layout.minimumWidth:0
+        Layout.preferredWidth:100
+        spacing:2
+        Label { width:parent.width;text:parent.caption;color:"#9aafbd";font.pixelSize:11;elide:Text.ElideRight }
+        Label { width:parent.width;text:parent.reading;color:"#edf6fb";font.family:"Consolas";font.pixelSize:15;font.bold:true;elide:Text.ElideRight }
+    }
+
+    component ChannelMetrics: Rectangle {
+        id:metrics
+        required property int channel
+        required property bool available
+        required property color channelColor
+        property bool hasData:available&&(channel===1?pokit.scopeSamples.length>1:channel===2?pokit.scopeSamples2.length>1:false)
+        readonly property real vpp:channel===1?pokit.scopeVpp:channel===2?pokit.scopeVpp2:0
+        readonly property real frequency:channel===1?pokit.scopeFrequency:channel===2?pokit.scopeFrequency2:0
+        readonly property real period:channel===1?pokit.scopePeriod:channel===2?pokit.scopePeriod2:0
+        readonly property real cycles:channel===1?pokit.scopeCycles:channel===2?pokit.scopeCycles2:0
+        readonly property real rms:channel===1?pokit.scopeRms:channel===2?pokit.scopeRms2:0
+        readonly property real minimum:channel===1?pokit.scopeMinimum:channel===2?pokit.scopeMinimum2:0
+        readonly property real maximum:channel===1?pokit.scopeMaximum:channel===2?pokit.scopeMaximum2:0
+        Layout.fillWidth:true;Layout.minimumWidth:0;Layout.preferredWidth:1;Layout.preferredHeight:94
+        radius:5;color:available?"#17232d":"#131c24";border.color:available?"#3d5260":"#293741"
+        Rectangle { width:3;anchors.left:parent.left;anchors.top:parent.top;anchors.bottom:parent.bottom;anchors.margins:1;color:metrics.channelColor;opacity:metrics.available?1:.35 }
+        GridLayout { anchors.fill:parent;anchors.margins:9;columns:4;columnSpacing:12;rowSpacing:8
+            Column { Layout.fillWidth:true;Layout.minimumWidth:0;Layout.preferredWidth:100;spacing:2
+                Label { text:"CH"+metrics.channel;color:metrics.channelColor;font.pixelSize:17;font.bold:true }
+                Label { width:parent.width;text:metrics.hasData?"Messwerte":metrics.available?"Warte auf Daten":"Nicht verbunden";color:"#9aafbd";font.pixelSize:11;elide:Text.ElideRight }
+            }
+            ScopeMetric { caption:"Spitze–Spitze";reading:metrics.hasData?metrics.vpp.toFixed(3)+" V":"—" }
+            ScopeMetric { caption:"Frequenz";reading:metrics.hasData&&metrics.frequency>0?(metrics.frequency>=1000?(metrics.frequency/1000).toFixed(2)+" kHz":metrics.frequency.toFixed(1)+" Hz"):"—" }
+            ScopeMetric { caption:"Periodendauer";reading:metrics.hasData?root.metricTime(metrics.period):"—" }
+            ScopeMetric { caption:"RMS";reading:metrics.hasData?metrics.rms.toFixed(3)+" V":"—" }
+            ScopeMetric { caption:"Minimum";reading:metrics.hasData?metrics.minimum.toFixed(3)+" V":"—" }
+            ScopeMetric { caption:"Maximum";reading:metrics.hasData?metrics.maximum.toFixed(3)+" V":"—" }
+            ScopeMetric { caption:"Zyklen";reading:metrics.hasData?metrics.cycles.toFixed(0):"—" }
+        }
+    }
 
     header: ToolBar { background: Rectangle { color: "#111a22"; border.color: root.line }
         RowLayout { anchors.fill: parent; anchors.margins: 10
@@ -93,13 +158,12 @@ ApplicationWindow {
             Button { text:"Multimeter";highlighted:!root.showDevices&&pokit.activeFeature==="meter";onClicked:{root.showDevices=false;pokit.showMultimeter()} }
             Button { text:"Oszilloskop";highlighted:!root.showDevices&&pokit.activeFeature==="scope";onClicked:{root.showDevices=false;pokit.showScope()} }
             Item { Layout.fillWidth:true }
-            Label { visible:pokit.activeFeature==="scope";text:"Vpp  "+pokit.scopeVpp.toFixed(3)+" V";color:root.ch1;font.bold:true }
-            Label { visible:pokit.activeFeature==="scope";text:"f  "+(pokit.scopeFrequency>0?(pokit.scopeFrequency>=1000?(pokit.scopeFrequency/1000).toFixed(2)+" kHz":pokit.scopeFrequency.toFixed(1)+" Hz"):"—");color:"#dce5e9" }
-            Label { visible:pokit.activeFeature==="scope";text:"T  "+root.metricTime(pokit.scopePeriod);color:"#dce5e9" }
-            Label { visible:pokit.activeFeature==="scope";text:"Zyklen  "+pokit.scopeCycles.toFixed(0);color:"#dce5e9" }
-            Label { visible:pokit.activeFeature==="scope";text:"RMS  "+pokit.scopeRms.toFixed(3)+" V";color:"#dce5e9" }
-            Label { visible:pokit.activeFeature==="scope";text:"Min/Max  "+pokit.scopeMinimum.toFixed(2)+" / "+pokit.scopeMaximum.toFixed(2)+" V";color:"#dce5e9" }
-            Label { visible:pokit.activeFeature==="scope"&&pokit.connected2;text:"CH2  "+pokit.scopeVpp2.toFixed(3)+" Vpp · "+(pokit.scopeFrequency2>0?pokit.scopeFrequency2.toFixed(1)+" Hz":"—");color:root.ch2;font.bold:true }
+        }
+        GridLayout { visible:!root.showDevices&&pokit.activeFeature==="scope";Layout.fillWidth:true;columns:2;columnSpacing:8;rowSpacing:6
+            ChannelMetrics { channel:1;available:pokit.connected;channelColor:root.ch1 }
+            ChannelMetrics { channel:2;available:pokit.connected2;channelColor:root.ch2 }
+            ChannelMetrics { channel:3;available:false;channelColor:"#ffd629" }
+            ChannelMetrics { channel:4;available:false;channelColor:"#55df89" }
         }
         StackLayout { currentIndex:root.showDevices?2:(pokit.activeFeature==="meter"?0:1);Layout.fillWidth:true;Layout.fillHeight:true
             Rectangle { color:root.panel;radius:12;border.color:root.line
@@ -194,6 +258,9 @@ ApplicationWindow {
                                     color: pokit.scopeRfPair ? "#7eff8c" : "#b9c6bc"
                                 }
                                 Item { Layout.fillWidth:true }
+                                CheckBox { text:"Zeitlinien";checked:root.timeCursorsVisible;onToggled:root.timeCursorsVisible=checked;palette.windowText:"#8de5ff" }
+                                CheckBox { text:"Spannungslinien";checked:root.voltageCursorsVisible;onToggled:root.voltageCursorsVisible=checked;palette.windowText:"#ffcf82" }
+                                Button { text:"↺";implicitWidth:32;ToolTip.visible:hovered;ToolTip.text:"Messlinien zurücksetzen";onClicked:{root.cursorT1=.3;root.cursorT2=.7;root.cursorU1=.3;root.cursorU2=.7} }
                                 Label { text:pokit.scopeRunning?"● ACQUIRE":"■ STOP";color:pokit.scopeRunning?"#7eff8c":"#ffb56b";font.bold:true }
                                 Label { text:pokit.scopeSampleRate>0?Math.round(pokit.scopeSampleRate/1000)+" kS/s":"— kS/s";color:"#b9c6bc" }
                             }
@@ -202,7 +269,7 @@ ApplicationWindow {
                                     function onScopeSamplesChanged(){scopeCanvas.requestPaint()}
                                     function onReferenceChanged(){scopeCanvas.requestPaint()}
                                 }
-                                Connections { target:root;function onCh1Changed(){scopeCanvas.requestPaint()} function onCh2Changed(){scopeCanvas.requestPaint()} }
+                                Connections { target:root;function onCh1Changed(){scopeCanvas.requestPaint()} function onCh2Changed(){scopeCanvas.requestPaint()} function onVoltsDivChanged(){scopeCanvas.requestPaint()} function onTimeDivUsChanged(){scopeCanvas.requestPaint()} }
                                 onWidthChanged:requestPaint();onHeightChanged:requestPaint()
                                 onPaint:{
                                     const paintStarted = Date.now()
@@ -214,7 +281,8 @@ ApplicationWindow {
                                     let tx=triggerFraction*width;c.fillStyle="#ff8c42";c.beginPath();c.moveTo(tx-7,0);c.lineTo(tx+7,0);c.lineTo(tx,10);c.closePath();c.fill()
                                     let zero=height/2-root.verticalPosition/root.voltsDiv*height/8;c.fillStyle=root.ch1;c.beginPath();c.moveTo(0,zero);c.lineTo(10,zero-6);c.lineTo(10,zero+6);c.closePath();c.fill()
                                     let saved=pokit.referenceSamples
-                                    function trace(values, color, alpha, sampleRate, triggerSample) {
+                                    const visibleWindowUs = pokit.scopeRfPair ? pokit.scopeRfWindowUs : root.timeDivUs * 10
+                                    function trace(values, color, alpha, sampleRate, triggerSample, originX) {
                                         if (values.length < 2) return
                                         c.save()
                                         c.beginPath()
@@ -228,7 +296,7 @@ ApplicationWindow {
                                         c.beginPath()
                                         for (let i = 0; i < values.length; ++i) {
                                             const x = sampleRate > 0
-                                                ? tx + (i - triggerSample) * width * 1e6 / (sampleRate * pokit.scopeRfWindowUs)
+                                                ? originX + (i - triggerSample) * width * 1e6 / (sampleRate * visibleWindowUs)
                                                 : i * width / (values.length - 1)
                                             const y = height / 2 - ((values[i] - root.verticalPosition) / root.voltsDiv) * height / 8
                                             if (i === 0) c.moveTo(x, y)
@@ -244,13 +312,88 @@ ApplicationWindow {
                                         c.stroke()
                                         c.restore()
                                     }
-                                    if (pokit.scopeTriggerSource === 0) trace(saved, root.reference, .72, 0, 0)
-                                    trace(b, root.ch2, 1, pokit.scopeRfPair ? pokit.scopeSampleRate2 : 0, pokit.scopeRfTriggerSample2)
-                                    trace(a, root.ch1, 1, pokit.scopeRfPair ? pokit.scopeSampleRate : 0, pokit.scopeRfTriggerSample)
+                                    const alignReferenceTrigger = pokit.scopeRfPair && pokit.referenceHasTrigger
+                                    trace(saved, root.reference, .85, pokit.referenceSampleRate,
+                                          alignReferenceTrigger ? pokit.referenceTriggerSample : 0,
+                                          alignReferenceTrigger ? tx : 0)
+                                    trace(b, root.ch2, 1, pokit.scopeRfPair ? pokit.scopeSampleRate2 : 0, pokit.scopeRfTriggerSample2, tx)
+                                    trace(a, root.ch1, 1, pokit.scopeRfPair ? pokit.scopeSampleRate : 0, pokit.scopeRfTriggerSample, tx)
                                     if (Date.now() - paintStarted > 100) console.warn("Scope paint took", Date.now() - paintStarted, "ms")
                                 }
                                 MouseArea { anchors.fill:parent;acceptedButtons:Qt.NoButton
                                     onWheel:function(wheel){root.setTimebaseIndex(timeBox.currentIndex+(wheel.angleDelta.y>0?-1:1));wheel.accepted=true}
+                                }
+                                // Separate scene items keep cursor dragging independent of BLE
+                                // acquisition and avoid repainting the waveform on every move.
+                                Item { anchors.fill:parent;clip:true
+                                    Repeater { model:2
+                                        Item {
+                                            id:timeCursor
+                                            required property int index
+                                            readonly property real fraction: index===0?root.cursorT1:root.cursorT2
+                                            visible:root.timeCursorsVisible
+                                            x:fraction*parent.width-width/2
+                                            width:22;height:parent.height
+                                            Rectangle { anchors.horizontalCenter:parent.horizontalCenter;width:1;height:parent.height;color:"#8de5ff";opacity:.85 }
+                                            Rectangle {
+                                                x:Math.max(-timeCursor.x, Math.min(12, timeCursor.parent.width-timeCursor.x-width))
+                                                y:timeCursor.index===0?8:40
+                                                width:timeText.implicitWidth+12;height:26;radius:3;color:"#102831";border.color:"#8de5ff"
+                                                Label { id:timeText;anchors.centerIn:parent;color:"#b8efff";font.pixelSize:12
+                                                    text:"T"+(timeCursor.index+1)+"  "+root.cursorTime((timeCursor.fraction-root.cursorTriggerFraction)*root.cursorWindowUs)
+                                                }
+                                            }
+                                            MouseArea { anchors.fill:parent;cursorShape:Qt.SizeHorCursor
+                                                function moveCursor(mouse) {
+                                                    const p=mapToItem(scopeCanvas,mouse.x,mouse.y)
+                                                    const value=Math.max(0,Math.min(1,p.x/scopeCanvas.width))
+                                                    if(timeCursor.index===0)root.cursorT1=value;else root.cursorT2=value
+                                                }
+                                                onPressed:function(mouse){moveCursor(mouse)}
+                                                onPositionChanged:function(mouse){if(pressed)moveCursor(mouse)}
+                                                onWheel:function(wheel){wheel.accepted=false}
+                                            }
+                                        }
+                                    }
+                                    Repeater { model:2
+                                        Item {
+                                            id:voltageCursor
+                                            required property int index
+                                            readonly property real fraction:index===0?root.cursorU1:root.cursorU2
+                                            visible:root.voltageCursorsVisible
+                                            y:fraction*parent.height-height/2
+                                            width:parent.width;height:22
+                                            Rectangle { anchors.verticalCenter:parent.verticalCenter;width:parent.width;height:1;color:"#ffcf82";opacity:.85 }
+                                            Rectangle {
+                                                x:Math.max(0,parent.width-width-8)
+                                                y:Math.max(-voltageCursor.y, Math.min(-18, voltageCursor.parent.height-voltageCursor.y-height))
+                                                width:voltageText.implicitWidth+12;height:26;radius:3;color:"#302418";border.color:"#ffcf82"
+                                                Label { id:voltageText;anchors.centerIn:parent;color:"#ffe0b0";font.pixelSize:12
+                                                    text:"U"+(voltageCursor.index+1)+"  "+root.cursorVoltage(root.verticalPosition+(0.5-voltageCursor.fraction)*root.voltsDiv*8)
+                                                }
+                                            }
+                                            MouseArea { anchors.fill:parent;cursorShape:Qt.SizeVerCursor
+                                                function moveCursor(mouse) {
+                                                    const p=mapToItem(scopeCanvas,mouse.x,mouse.y)
+                                                    const value=Math.max(0,Math.min(1,p.y/scopeCanvas.height))
+                                                    if(voltageCursor.index===0)root.cursorU1=value;else root.cursorU2=value
+                                                }
+                                                onPressed:function(mouse){moveCursor(mouse)}
+                                                onPositionChanged:function(mouse){if(pressed)moveCursor(mouse)}
+                                                onWheel:function(wheel){wheel.accepted=false}
+                                            }
+                                        }
+                                    }
+                                    Rectangle {
+                                        visible:root.timeCursorsVisible||root.voltageCursorsVisible
+                                        anchors.left:parent.left;anchors.bottom:parent.bottom;anchors.margins:8
+                                        width:Math.min(parent.width-16,cursorResult.implicitWidth+20);height:30;radius:4;color:"#e6111d22";border.color:"#536973"
+                                        Label { id:cursorResult;anchors.fill:parent;anchors.margins:6;color:"#eef7fa";font.pixelSize:12;elide:Text.ElideRight
+                                            text:(root.timeCursorsVisible?"Δt (T2−T1)  "+root.cursorTime(root.cursorDeltaUs)+"    1/|Δt|  "+root.cursorFrequency():"")
+                                                +(root.timeCursorsVisible&&root.voltageCursorsVisible?"     ·     ":"")
+                                                +(root.voltageCursorsVisible?"ΔU (U2−U1)  "+root.cursorVoltage(root.cursorDeltaV):"")
+                                        }
+                                    }
                                 }
                             }
                             RowLayout { Layout.fillWidth:true
@@ -272,15 +415,15 @@ ApplicationWindow {
                                 RowLayout { Repeater { model:4;Button { required property int index;text:"CH"+(index+1);enabled:index===0||(index===1&&pokit.connected2);highlighted:enabled;Layout.fillWidth:true } } }
                                 GroupBox { title:pokit.connected2?"VERTICAL · CH1 + CH2":"VERTICAL · CH1";Layout.fillWidth:true
                                     ColumnLayout { anchors.fill:parent
-                                        RowLayout { Label{text:"Kopplung";Layout.fillWidth:true} ComboBox{id:coupling;model:["DC","AC"];onActivated:pokit.setScopeConfig(currentText,root.voltsDiv,root.timeDivUs)} }
-                                        RowLayout { Label{text:"Volt / Div";Layout.fillWidth:true} ComboBox{id:voltsBox;model:["10 mV","20 mV","50 mV","100 mV","200 mV","500 mV","1 V","2 V","5 V","10 V","20 V","50 V"];currentIndex:6;onActivated:{let v=[.01,.02,.05,.1,.2,.5,1,2,5,10,20,50][currentIndex];root.voltsDiv=v;verticalSlider.from=-4*v;verticalSlider.to=4*v;triggerLevel.from=-400*v;triggerLevel.to=400*v;scopeCanvas.requestPaint();pokit.setScopeConfig(coupling.currentText,v,root.timeDivUs)}} }
+                                        RowLayout { Label{text:"Kopplung";Layout.fillWidth:true} ComboBox{id:coupling;model:["DC","AC"];currentIndex:pokit.scopeCoupling==="AC"?1:0;onActivated:pokit.setScopeConfig(currentText,root.voltsDiv,root.timeDivUs)} }
+                                        RowLayout { Label{text:"Volt / Div";Layout.fillWidth:true} ComboBox{id:voltsBox;model:["10 mV","20 mV","50 mV","100 mV","200 mV","500 mV","1 V","2 V","5 V","10 V","20 V","50 V"];currentIndex:[.01,.02,.05,.1,.2,.5,1,2,5,10,20,50].indexOf(root.voltsDiv);onActivated:{let v=[.01,.02,.05,.1,.2,.5,1,2,5,10,20,50][currentIndex];pokit.setScopeConfig(coupling.currentText,v,root.timeDivUs)}} }
                                         Label { text:"Position  "+root.verticalPosition.toFixed(2)+" V" }
-                                        Slider { id:verticalSlider;Layout.fillWidth:true;from:-4;to:4;value:0;onMoved:{root.verticalPosition=value;scopeCanvas.requestPaint()} }
+                                        Slider { id:verticalSlider;Layout.fillWidth:true;from:-4*root.voltsDiv;to:4*root.voltsDiv;value:0;onMoved:{root.verticalPosition=value;scopeCanvas.requestPaint()} }
                                     }
                                 }
                                 GroupBox { title:"HORIZONTAL";Layout.fillWidth:true
                                     ColumnLayout { anchors.fill:parent
-                                        RowLayout { Label{text:"Zeit / Div";Layout.fillWidth:true} ComboBox{id:timeBox;model:["10 µs","20 µs","50 µs","100 µs","200 µs","500 µs","1 ms","2 ms","5 ms","10 ms","20 ms","50 ms","100 ms","200 ms","500 ms","1 s"];currentIndex:9;onActivated:root.setTimebaseIndex(currentIndex)} }
+                                        RowLayout { Label{text:"Zeit / Div";Layout.fillWidth:true} ComboBox{id:timeBox;model:["10 µs","20 µs","50 µs","100 µs","200 µs","500 µs","1 ms","2 ms","5 ms","10 ms","20 ms","50 ms","100 ms","200 ms","500 ms","1 s"];currentIndex:root.timeBases.indexOf(root.timeDivUs);onActivated:root.setTimebaseIndex(currentIndex)} }
                                         Label { text:"Triggerposition" }
                                         Slider { Layout.fillWidth:true;from:.1;to:.9;value:.5
                                             onMoved:{root.triggerPosition=value;pokit.setScopeTriggerPosition(value);scopeCanvas.requestPaint()}
@@ -289,18 +432,20 @@ ApplicationWindow {
                                 }
                                 GroupBox { title:"TRIGGER";Layout.fillWidth:true
                                     ColumnLayout { anchors.fill:parent
-                                        RowLayout { Label{text:"Modus";Layout.fillWidth:true} ComboBox{id:triggerMode;model:["Auto / Sofort","Steigend","Fallend"];displayText:currentIndex===0?(pokit.scopeTriggerSource>0?"Sofort":"Auto"):currentText;onActivated:pokit.setScopeTrigger(["free","rising","falling"][currentIndex],triggerLevel.value/100)} }
+                                        RowLayout { Label{text:"Modus";Layout.fillWidth:true} ComboBox{id:triggerMode;model:["Auto / Sofort","Steigend","Fallend"];currentIndex:["free","rising","falling"].indexOf(pokit.scopeTriggerMode);displayText:currentIndex===0?(pokit.scopeTriggerSource>0?"Sofort":"Auto"):currentText;onActivated:pokit.setScopeTrigger(["free","rising","falling"][currentIndex],triggerLevel.value/100)} }
                                         RowLayout {
                                             Label { text:"Quelle"; Layout.fillWidth:true }
                                             ComboBox {
                                                 model: ["Je Kanal", "CH1 · Funk", "CH2 · Funk"]
                                                 currentIndex: pokit.scopeTriggerSource
                                                 enabled: pokit.connected2 || pokit.scopeTriggerSource > 0
-                                                onActivated: pokit.setScopeTriggerSource(currentIndex)
+                                                onActivated: {
+                                                    pokit.setScopeTriggerSource(currentIndex)
+                                                }
                                             }
                                         }
                                         Label { text:"Pegel  "+(triggerLevel.value/100).toFixed(2)+" V" }
-                                        Slider { id:triggerLevel;Layout.fillWidth:true;from:-400;to:400;value:0;stepSize:1;onMoved:pokit.setScopeTrigger(["free","rising","falling"][triggerMode.currentIndex],value/100) }
+                                        Slider { id:triggerLevel;Layout.fillWidth:true;from:-400*root.voltsDiv;to:400*root.voltsDiv;value:pokit.scopeTriggerLevel*100;stepSize:1;onMoved:pokit.setScopeTrigger(["free","rising","falling"][triggerMode.currentIndex],value/100) }
                                     }
                                 }
                                 GroupBox { title:"CAPTURE & VERGLEICH";Layout.fillWidth:true
@@ -312,7 +457,10 @@ ApplicationWindow {
                                         ComboBox { id:captureBox;Layout.fillWidth:true;model:pokit.savedCaptures;textRole:"name";displayText:currentIndex>=0?currentText:"Gespeicherte Aufnahme wählen";onActivated:{let item=pokit.savedCaptures[currentIndex];if(item)pokit.loadScopeCapture(item.path)} }
                                         RowLayout { Layout.fillWidth:true
                                             Label { Layout.fillWidth:true;elide:Text.ElideRight;text:pokit.referenceName.length?"Vergleich: "+pokit.referenceName:"Keine Vergleichskurve";color:pokit.referenceName.length?"#15839a":"#5e676b" }
-                                            Button { text:"AUSBLENDEN";enabled:pokit.referenceName.length>0;onClicked:pokit.clearScopeReference() }
+                                        }
+                                        RowLayout { Layout.fillWidth:true
+                                            Button { text:"EINBLENDEN";Layout.fillWidth:true;enabled:captureBox.currentIndex>=0;onClicked:{let item=pokit.savedCaptures[captureBox.currentIndex];if(item)pokit.loadScopeCapture(item.path)} }
+                                            Button { text:"AUSBLENDEN";Layout.fillWidth:true;enabled:pokit.referenceName.length>0;onClicked:pokit.clearScopeReference() }
                                         }
                                         Label { Layout.fillWidth:true;wrapMode:Text.WordWrap;font.pixelSize:10;color:"#5e676b";text:"PDF-Bericht, JSON-Aufnahme und CSV-Wertetabelle werden gemeinsam gespeichert." }
                                     }
@@ -320,7 +468,7 @@ ApplicationWindow {
                                 RowLayout { Layout.fillWidth:true
                                     Button {
                                         text:pokit.scopeRunning?"STOP":"RUN"
-                                        enabled: pokit.scopeTriggerSource === 0 || pokit.scopeRunning
+                                        enabled: pokit.scopeTriggerSource === 0 || pokit.scopeRunning || pokit.scopeRfReady
                                         Layout.fillWidth:true
                                         onClicked:pokit.setScopeRunning(!pokit.scopeRunning)
                                     }

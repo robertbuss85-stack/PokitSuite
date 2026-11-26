@@ -13,6 +13,13 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 - Local telemetry/command bridge and MCP measurement/configuration tools
 - Two-device DMM voltage readings and DSO acquisition
 - Native radio-triggered single captures with either Pokit Pro as master, matched frame numbers and shared trigger-axis rendering
+- Repeated radio-triggered acquisition pairs with RUN/STOP, 10 µs/div support and setting changes between complete pairs
+- Selectable saved reference curves with recorded timebase, including radio-trigger display
+
+## Implemented and UI-tested
+
+- Draggable time and voltage cursors with signed differences and reciprocal time interval
+- Fixed two-by-two channel metric layout with full CH1/CH2 readings and reserved CH3/CH4 positions
 
 ## Implemented, protocol-tested, hardware-dependent
 
@@ -26,6 +33,7 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 - Radio-triggered single acquisitions are tested, while channel skew/jitter and the usable A/B encoder speed range still need reference measurements
 - Bluetooth behavior can vary with Windows adapter/driver and competing Pokit clients
 - Frequency/duty estimates need clean crossings and sufficient cycles
+- Rising/falling radio-trigger acquisition still has intermittent missing captures under investigation
 - Arduino end-to-end autonomous repair is not validated for every board/core
 - Binaries are not code-signed; first launch may trigger SmartScreen
 - Legacy browser frontend remains available but is not the supported UI
@@ -42,8 +50,8 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 
 ### Later
 
-- Extend native radio-triggered acquisition to CH3/CH4 and continuous capture
-- Cursor measurements, protocol-oriented views and richer trigger types
+- Extend native radio-triggered acquisition to CH3/CH4
+- Protocol-oriented views and richer trigger types
 - Cross-platform validation on Linux and macOS where BLE support permits
 - Guardrailed AI diagnosis recipes and repeatable hardware-in-the-loop tests
 

@@ -40,6 +40,11 @@ class PokitController final : public QObject
     Q_PROPERTY(QVariantList scopeSamples READ scopeSamples NOTIFY scopeSamplesChanged)
     Q_PROPERTY(QVariantList scopeSamples2 READ scopeSamples2 NOTIFY scopeSamplesChanged)
     Q_PROPERTY(bool scopeRunning READ scopeRunning NOTIFY scopeStateChanged)
+    Q_PROPERTY(QString scopeTriggerMode MEMBER m_triggerMode NOTIFY scopeStateChanged)
+    Q_PROPERTY(double scopeTriggerLevel MEMBER m_triggerLevel NOTIFY scopeStateChanged)
+    Q_PROPERTY(double scopeVoltsPerDiv MEMBER m_scopeVoltsPerDiv NOTIFY scopeStateChanged)
+    Q_PROPERTY(int scopeTimePerDivUs MEMBER m_scopeTimePerDivUs NOTIFY scopeStateChanged)
+    Q_PROPERTY(QString scopeCoupling MEMBER m_scopeCoupling NOTIFY scopeStateChanged)
     Q_PROPERTY(int scopeTriggerSource READ scopeTriggerSource NOTIFY scopeStateChanged)
     Q_PROPERTY(bool scopeRfReady READ scopeRfReady NOTIFY scopeStateChanged)
     Q_PROPERTY(bool scopeRfPair READ scopeRfPair NOTIFY scopeStateChanged)
@@ -63,9 +68,14 @@ class PokitController final : public QObject
     Q_PROPERTY(double scopeMaximum2 READ scopeMaximum2 NOTIFY scopeMetricsChanged)
     Q_PROPERTY(double scopeRms2 READ scopeRms2 NOTIFY scopeMetricsChanged)
     Q_PROPERTY(double scopeFrequency2 READ scopeFrequency2 NOTIFY scopeMetricsChanged)
+    Q_PROPERTY(double scopePeriod2 READ scopePeriod2 NOTIFY scopeMetricsChanged)
+    Q_PROPERTY(double scopeCycles2 READ scopeCycles2 NOTIFY scopeMetricsChanged)
     Q_PROPERTY(QVariantList savedCaptures READ savedCaptures NOTIFY savedCapturesChanged)
     Q_PROPERTY(QVariantList referenceSamples READ referenceSamples NOTIFY referenceChanged)
     Q_PROPERTY(QString referenceName READ referenceName NOTIFY referenceChanged)
+    Q_PROPERTY(double referenceSampleRate MEMBER m_referenceSampleRate NOTIFY referenceChanged)
+    Q_PROPERTY(int referenceTriggerSample MEMBER m_referenceTriggerSample NOTIFY referenceChanged)
+    Q_PROPERTY(bool referenceHasTrigger MEMBER m_referenceHasTrigger NOTIFY referenceChanged)
     Q_PROPERTY(QString activeFeature READ activeFeature NOTIFY activeFeatureChanged)
 
 public:
@@ -116,6 +126,8 @@ public:
     double scopeMaximum2() const { return m_scopeMaximum2; }
     double scopeRms2() const { return m_scopeRms2; }
     double scopeFrequency2() const { return m_scopeFrequency2; }
+    double scopePeriod2() const { return m_scopePeriod2; }
+    double scopeCycles2() const { return m_scopeCycles2; }
     QVariantList savedCaptures() const { return m_savedCaptures; }
     QVariantList referenceSamples() const;
     QString referenceName() const { return m_referenceName; }
@@ -203,6 +215,7 @@ private:
     QTimer m_scopeRestartTimer;
     QTimer m_scopeRestartTimer2;
     QTimer m_rfTimeout;
+    QTimer m_rfRestart;
     QTimer m_automationTimer;
     QString m_status = QStringLiteral("Bereit");
     QString m_deviceName = QStringLiteral("Nicht verbunden");
@@ -246,6 +259,9 @@ private:
     double m_scopeTriggerPosition = 0.5;
     bool m_rfNotificationsReady[2]{};
     bool m_scopeRfPair = false;
+    bool m_rfContinuous = false;
+    int m_rfResends = 0;
+    int m_rfRecoveries = 0;
     quint8 m_rfGroup = 0;
     quint16 m_scopeRfTriggerSample = 0;
     double m_meterValue = 0.0;
@@ -289,5 +305,8 @@ private:
     QVariantList m_savedCaptures;
     QVector<double> m_referenceValues;
     QString m_referenceName;
+    double m_referenceSampleRate = 0.0;
+    int m_referenceTriggerSample = 0;
+    bool m_referenceHasTrigger = false;
 };
 

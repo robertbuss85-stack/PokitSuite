@@ -131,7 +131,34 @@ PokitController::PokitController(QObject *parent) : QObject(parent)
     connect(&m_scopeRestartTimer2, &QTimer::timeout,
             this, &PokitController::startScope2);
     m_rfTimeout.setSingleShot(true);
+    m_rfRestart.setSingleShot(true);
+    m_rfRestart.setInterval(500);
+    connect(&m_rfRestart, &QTimer::timeout, this, &PokitController::startRfCapture);
     connect(&m_rfTimeout, &QTimer::timeout, this, [this] {
+        const auto incomplete = [](const RfFrame &frame) {
+            return frame.metadata && frame.values.size() < frame.metadata->numberOfSamples;
+        };
+        if (m_rfStage == RfStage::WaitingForFrames && m_connected && m_connected2
+            && (incomplete(m_rfFrames[0]) || incomplete(m_rfFrames[1])) && m_rfResends < 2) {
+            ++m_rfResends;
+            qInfo() << "RF retransmission" << m_rfResends
+                    << "received samples" << m_rfFrames[0].values.size() << m_rfFrames[1].values.size();
+            setStatus(QStringLiteral("Funktrigger: fehlende Daten werden erneut abgerufen"));
+            m_rfTimeout.start(15000);
+            for (int channel = 0; channel < 2; ++channel) {
+                auto &frame = m_rfFrames[channel];
+                if (!frame.metadata || frame.values.size() == frame.metadata->numberOfSamples) continue;
+                frame = {};
+                auto resend = m_rfSettings;
+                resend.command = DsoService::Command::ResendData;
+                auto *service = channel == 0 ? m_dso : m_dso2;
+                const auto role = channel + 1 == m_scopeTriggerSource
+                    ? DsoService::SyncRole::Master : DsoService::SyncRole::Follower;
+                service->setSynchronizedSettings(resend, m_scopeRfTriggerSample, role, m_rfGroup);
+            }
+            publishAutomationState();
+            return;
+        }
         failRfCapture(m_rfStage == RfStage::ArmingFollower
             ? QStringLiteral("Funktrigger: Empfänger hat das Scharfstellen nicht bestätigt")
             : QStringLiteral("Funktrigger: kein vollständiges Aufnahmepaar empfangen"));
@@ -888,7 +915,9 @@ QString PokitController::saveScopeCapture()
         {QStringLiteral("volts_per_div"), m_scopeVoltsPerDiv},
         {QStringLiteral("coupling"), m_scopeCoupling},
         {QStringLiteral("trigger_mode"), m_triggerMode},
-        {QStringLiteral("trigger_level_v"), m_triggerLevel}
+        {QStringLiteral("trigger_level_v"), m_triggerLevel},
+        {QStringLiteral("trigger_sample"), m_scopeRfPair
+            ? QJsonValue(scopeRfTriggerSample()) : QJsonValue()}
     };
     QJsonArray waveform;
     for (double value : m_scopeValues) waveform.append(value);
@@ -940,12 +969,37 @@ void PokitController::loadScopeCapture(const QString &jsonPath)
         return;
     }
     QFile file(info.filePath());
-    if (!file.open(QIODevice::ReadOnly)) return;
+    if (!file.open(QIODevice::ReadOnly)) {
+        setStatus(QStringLiteral("Gespeicherte Aufnahme konnte nicht geöffnet werden"));
+        return;
+    }
     const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
     const QJsonArray waveform = object.value(QStringLiteral("waveform_v")).toArray();
     QVector<double> values; values.reserve(waveform.size());
-    for (const QJsonValue &value : waveform) values.append(value.toDouble());
-    if (values.size() < 2) return;
+    for (const QJsonValue &value : waveform) {
+        if (!value.isDouble() || !std::isfinite(value.toDouble())) {
+            setStatus(QStringLiteral("Gespeicherte Aufnahme enthält ungültige Messwerte"));
+            return;
+        }
+        values.append(value.toDouble());
+    }
+    if (values.size() < 2) {
+        setStatus(QStringLiteral("Gespeicherte Aufnahme enthält keine Kurve"));
+        return;
+    }
+    const auto settings = object.value(QStringLiteral("settings")).toObject();
+    double rate = settings.value(QStringLiteral("sample_rate_hz")).toDouble();
+    const double window = settings.value(QStringLiteral("sampling_window_us")).toDouble();
+    if (!(rate > 0) && window > 0) rate = values.size() * 1e6 / window;
+    if (!(rate > 0) || !std::isfinite(rate)) {
+        setStatus(QStringLiteral("Gespeicherte Aufnahme enthält keine gültige Zeitbasis"));
+        return;
+    }
+    const auto trigger = settings.value(QStringLiteral("trigger_sample"));
+    m_referenceHasTrigger = trigger.isDouble() && trigger.toDouble() >= 0
+        && trigger.toDouble() <= values.size();
+    m_referenceTriggerSample = m_referenceHasTrigger ? trigger.toInt() : 0;
+    m_referenceSampleRate = rate;
     m_referenceValues = values;
     m_referenceName = object.value(QStringLiteral("display_name")).toString(info.baseName());
     emit referenceChanged();
@@ -956,6 +1010,9 @@ void PokitController::clearScopeReference()
 {
     m_referenceValues.clear();
     m_referenceName.clear();
+    m_referenceSampleRate = 0;
+    m_referenceTriggerSample = 0;
+    m_referenceHasTrigger = false;
     emit referenceChanged();
 }
 
@@ -993,6 +1050,8 @@ void PokitController::publishAutomationState()
     QJsonArray waveform2;
     for (double value : m_scopeValues2) waveform2.append(value);
     QJsonObject scope{
+        {QStringLiteral("device_scale"), double(m_scopeMetadata.scale)},
+        {QStringLiteral("device_range"), int(m_scopeMetadata.range)},
         {QStringLiteral("sample_rate_hz"), double(m_scopeMetadata.samplingRate)},
         {QStringLiteral("sampling_window_us"), double(m_scopeMetadata.samplingWindow)},
         {QStringLiteral("samples"), m_scopeValues.size()},
@@ -1007,6 +1066,8 @@ void PokitController::publishAutomationState()
         {QStringLiteral("waveform_v"), waveform}
     };
     QJsonObject scope2{
+        {QStringLiteral("device_scale"), double(m_scopeMetadata2.scale)},
+        {QStringLiteral("device_range"), int(m_scopeMetadata2.range)},
         {QStringLiteral("sample_rate_hz"), double(m_scopeMetadata2.samplingRate)},
         {QStringLiteral("sampling_window_us"), double(m_scopeMetadata2.samplingWindow)},
         {QStringLiteral("samples"), m_scopeValues2.size()},
@@ -1107,6 +1168,8 @@ void PokitController::scheduleReconnect2()
 void PokitController::showMultimeter()
 {
     if (m_feature == QStringLiteral("meter")) return;
+    m_rfContinuous = false;
+    m_rfRestart.stop();
     if (m_rfStage != RfStage::Idle) {
         stopRfCapture();
         m_scopeRunning = false;
@@ -1239,35 +1302,57 @@ void PokitController::configureMeter(bool second)
 void PokitController::setScopeTrigger(const QString &mode, double level)
 {
     if (m_triggerMode == mode && m_triggerLevel == level) return;
-    if (m_rfStage != RfStage::Idle) setScopeRunning(false);
+    if (m_scopeTriggerSource && m_scopeRunning && !m_rfContinuous) {
+        m_rfRestart.stop();
+        stopRfCapture();
+    }
     m_triggerMode = mode; m_triggerLevel = level;
+    emit scopeStateChanged();
     m_scopeRestartTimer.stop();
     m_scopeRestartTimer2.stop();
-    if (m_feature == QStringLiteral("scope") && m_scopeRunning) { startScope(); startScope2(); }
+    if (m_feature == QStringLiteral("scope") && m_scopeRunning) {
+        if (m_scopeTriggerSource) {
+            if (m_rfStage == RfStage::Idle) m_rfRestart.start();
+        }
+        else { startScope(); startScope2(); }
+    }
 }
 
 void PokitController::setScopeConfig(const QString &coupling, double voltsPerDiv, int timePerDivUs)
 {
     if (m_scopeCoupling == coupling && m_scopeVoltsPerDiv == voltsPerDiv
         && m_scopeTimePerDivUs == timePerDivUs) return;
-    if (m_rfStage != RfStage::Idle) setScopeRunning(false);
+    if (m_scopeTriggerSource && m_scopeRunning && !m_rfContinuous) {
+        m_rfRestart.stop();
+        stopRfCapture();
+    }
     m_scopeCoupling = coupling;
     m_scopeVoltsPerDiv = qBound(0.01, voltsPerDiv, 100.0);
     m_scopeTimePerDivUs = qBound(10, timePerDivUs, 1000000);
+    emit scopeStateChanged();
     m_scopeRestartTimer.stop();
     m_scopeRestartTimer2.stop();
-    if (m_feature == QStringLiteral("scope") && m_scopeRunning) { startScope(); startScope2(); }
+    if (m_feature == QStringLiteral("scope") && m_scopeRunning) {
+        if (m_scopeTriggerSource) {
+            if (m_rfStage == RfStage::Idle) m_rfRestart.start();
+        }
+        else { startScope(); startScope2(); }
+    }
 }
 
 void PokitController::setScopeRunning(bool running)
 {
     if (m_scopeTriggerSource) {
+        if (running && !m_rfContinuous) m_rfRecoveries = 0;
+        m_rfContinuous = running;
         if (running) startRfCapture();
-        else if (m_rfStage != RfStage::Idle) {
+        else {
+            m_rfRestart.stop();
             stopRfCapture();
             m_scopeRunning = false;
             emit scopeStateChanged();
             setStatus(QStringLiteral("Funkaufnahme angehalten"));
+            publishAutomationState();
         }
         return;
     }
@@ -1296,6 +1381,8 @@ void PokitController::setScopeRunning(bool running)
 void PokitController::scopeSingle()
 {
     if (m_scopeTriggerSource) {
+        m_rfContinuous = false;
+        m_rfRestart.stop();
         startRfCapture();
         return;
     }
@@ -1357,7 +1444,6 @@ void PokitController::startScope2()
 
 namespace {
 constexpr quint16 rfSamples = 1000;
-constexpr quint32 rfMinimumWindowUs = 1000;
 
 bool isRadioCapable(const PokitDevice *device)
 {
@@ -1380,6 +1466,8 @@ void PokitController::setScopeTriggerSource(int channel)
 {
     if (channel < 0 || channel > 2 || channel == m_scopeTriggerSource) return;
     stopRfCapture();
+    m_rfContinuous = false;
+    m_rfRestart.stop();
     m_scopeRunning = false;
     m_scopeSingle = false;
     m_scopeAccepting = m_scopeAccepting2 = false;
@@ -1421,32 +1509,30 @@ void PokitController::startRfCapture()
 {
     if (m_rfStage != RfStage::Idle || m_feature != QStringLiteral("scope")) return;
     if (!scopeRfReady()) {
+        m_rfContinuous = false;
+        m_scopeRunning = false;
+        emit scopeStateChanged();
         setStatus(QStringLiteral("Funktrigger benötigt zwei messbereite Pokit Pro"));
         return;
     }
     const auto settings = scopeSettings();
-    if (settings.samplingWindow < rfMinimumWindowUs) {
-        setStatus(QStringLiteral("Funktrigger: mindestens 100 µs/div einstellen"));
-        return;
-    }
-
-    clearRfPair();
+    // Keep the most recent complete pair visible while the next trigger is pending.
     m_dso->setPokitProduct(PokitProduct::PokitPro);
     m_dso2->setPokitProduct(PokitProduct::PokitPro);
     m_rfSettings = settings;
-    m_rfSettings.numberOfSamples = rfSamples;
     // A fresh radio group filters late data and acknowledgements from prior shots.
     m_rfGroup = m_rfGroup ? quint8(m_rfGroup % 127 + 1)
                           : quint8(QRandomGenerator::global()->bounded(1, 128));
     m_scopeRfTriggerSample = settings.command == DsoService::Command::FreeRunning
-        ? 0 : quint16(qRound(m_scopeTriggerPosition * rfSamples));
+        ? 0 : quint16(qRound(m_scopeTriggerPosition * m_rfSettings.numberOfSamples));
     m_rfFrames[0] = {};
     m_rfFrames[1] = {};
+    m_rfResends = 0;
     m_scopeRunning = true;
     m_rfStage = RfStage::ArmingFollower;
     emit scopeStateChanged();
     setStatus(QStringLiteral("Funktrigger: Empfänger wird scharfgestellt"));
-    m_rfTimeout.start(5000);
+    m_rfTimeout.start(15000);
     auto *follower = m_scopeTriggerSource == 1 ? m_dso2 : m_dso;
     if (!follower->setSynchronizedSettings(m_rfSettings, m_scopeRfTriggerSample,
                                            DsoService::SyncRole::Follower, m_rfGroup)) {
@@ -1471,6 +1557,12 @@ void PokitController::onRfSettingsWritten(int channel, DsoService::SyncRole role
 
 void PokitController::onRfMetadata(int channel, const DsoService::Metadata &metadata)
 {
+    if (m_rfStage == RfStage::WaitingForFrames) {
+        qInfo() << "RF metadata CH" << channel << "status" << int(metadata.status)
+                << "window" << metadata.samplingWindow << "samples" << metadata.numberOfSamples
+                << "group" << metadata.syncGroup.value_or(255) << "expected" << m_rfGroup
+                << "role" << int(metadata.syncRole.value_or(DsoService::SyncRole::Independent));
+    }
     if (m_rfStage != RfStage::WaitingForFrames || metadata.status != DsoService::DsoStatus::Done
         || metadata.mode != m_rfSettings.mode || metadata.samplingWindow != m_rfSettings.samplingWindow
         || metadata.numberOfSamples != m_rfSettings.numberOfSamples
@@ -1523,7 +1615,8 @@ void PokitController::onRfSamples(int channel, const DsoService::Samples &sample
     m_scopeValues = first.values;
     m_scopeValues2 = second.values;
     m_scopeRfPair = true;
-    m_scopeRunning = false;
+    m_rfRecoveries = 0;
+    m_scopeRunning = m_rfContinuous;
     updateScopeMetrics();
     updateScopeMetrics2();
     emit scopeStateChanged();
@@ -1531,6 +1624,7 @@ void PokitController::onRfSamples(int channel, const DsoService::Samples &sample
     setStatus(QStringLiteral("Funktrigger CH%1 · Aufnahmepaar %2 · %3 Samples je Kanal")
               .arg(m_scopeTriggerSource).arg(*m_scopeMetadata.captureSequence).arg(m_scopeValues.size()));
     publishAutomationState();
+    if (m_rfContinuous) m_rfRestart.start();
 }
 
 void PokitController::stopRfCapture()
@@ -1550,6 +1644,16 @@ void PokitController::stopRfCapture()
 
 void PokitController::failRfCapture(const QString &message)
 {
+    if (m_rfContinuous && scopeRfReady() && m_rfRecoveries < 3) {
+        ++m_rfRecoveries;
+        stopRfCapture();
+        m_rfRestart.start(1000);
+        setStatus(QStringLiteral("%1 · automatischer Neuversuch %2/3").arg(message).arg(m_rfRecoveries));
+        publishAutomationState();
+        return;
+    }
+    m_rfContinuous = false;
+    m_rfRestart.stop();
     stopRfCapture();
     m_scopeRunning = false;
     setStatus(message);
