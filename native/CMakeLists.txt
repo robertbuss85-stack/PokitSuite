@@ -3,6 +3,9 @@ project(PokitSuiteNative VERSION 0.3.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Bluetooth)
 
@@ -30,6 +33,8 @@ target_compile_definitions(QtPokit PRIVATE QTPOKIT_LIBRARY QT_NO_KEYWORDS)
 
 qt_add_executable(PokitSuiteNative
   src/main.cpp
+  src/metertools.cpp
+  src/metertools.h
   src/pokitbridge.cpp
   src/pokitbridge.h
   src/pokitcontroller.cpp
@@ -38,12 +43,23 @@ qt_add_executable(PokitSuiteNative
 qt_add_qml_module(PokitSuiteNative
   URI PokitSuite
   VERSION 1.0
-  QML_FILES qml/Main.qml)
+  QML_FILES qml/Main.qml qml/MeterWorkspace.qml)
 
 target_link_libraries(PokitSuiteNative PRIVATE
   Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Bluetooth QtPokit)
 if(WIN32)
   target_link_libraries(PokitSuiteNative PRIVATE ole32)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(MeterToolsTest tests/metertools_test.cpp src/metertools.cpp src/metertools.h)
+  target_include_directories(MeterToolsTest PRIVATE src)
+  target_link_libraries(MeterToolsTest PRIVATE Qt6::Core Qt6::Gui)
+  add_test(NAME meter-tools COMMAND MeterToolsTest)
+  if(NOT WIN32)
+    set_tests_properties(meter-tools PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  endif()
 endif()
 
 

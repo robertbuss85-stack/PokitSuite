@@ -43,6 +43,7 @@ static QString deviceKey(const QBluetoothDeviceInfo &info)
 
 PokitController::PokitController(QObject *parent) : QObject(parent)
 {
+    connect(&m_meterTools, &MeterTools::changed, this, &PokitController::meterToolsChanged);
     m_savedDevices = QSettings(QStringLiteral("PokitSuite"), QStringLiteral("PokitSuite"))
                          .value(QStringLiteral("devices")).toMap();
     m_savedDevices.remove(QUuid{}.toString(QUuid::WithoutBraces));
@@ -470,6 +471,7 @@ void PokitController::ensureMeter()
         m_meterWatchdog.start();
         m_meterValue = reading.mode == MultimeterService::Mode::Continuity
             ? double(reading.status == MultimeterService::MeterStatus::Continuity) : reading.value;
+        m_meterTools.sample(1, m_meterValue);
         m_meterValues.append(m_meterValue);
         if (m_meterValues.size() > 7200) m_meterValues.remove(0, m_meterValues.size() - 7200);
         emit meterValueChanged(); emit meterHistoryChanged();
@@ -512,6 +514,7 @@ void PokitController::ensureMeter2()
         m_meterWatchdog2.start();
         m_meterValue2 = reading.mode == MultimeterService::Mode::Continuity
             ? double(reading.status == MultimeterService::MeterStatus::Continuity) : reading.value;
+        m_meterTools.sample(2, m_meterValue2);
         m_meterValues2.append(m_meterValue2);
         if (m_meterValues2.size() > 7200) m_meterValues2.remove(0, m_meterValues2.size() - 7200);
         emit meterValueChanged(); emit meterHistoryChanged();
@@ -1292,6 +1295,7 @@ void PokitController::configureMeter(bool second)
     }
     m_configuredMeterMode[second] = mode;
     (second ? m_meterUnit2 : m_meterUnit) = unit;
+    m_meterTools.setUnit(second ? 2 : 1, unit);
     valid = false;
     (second ? m_meterOverrange2 : m_meterOverrange) = false;
     emit meterValueChanged();

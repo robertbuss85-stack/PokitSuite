@@ -7,9 +7,12 @@ python -m compileall -q mcp tests
 python tests/mcp_contract_test.py
 cmake -S native -B native/build -G Ninja -DCMAKE_PREFIX_PATH=C:/Qt/6.8.3/msvc2022_64
 cmake --build native/build --parallel
+ctest --test-dir native/build --output-on-failure
 ```
 
 CI performs a clean Windows native build and an offline MCP handshake/tool-schema test. It cannot validate Bluetooth timing or analog accuracy without physical hardware.
+
+The `meter-tools` native test checks HOLD/REL and statistics, unit resets, alarm transition logging, rejection of invalid limits and nonfinite values, CSV annotations/quoting, PDF export, a frozen historical window during new acquisition, and bounded plot snapshots after more than 100,000 samples. On Windows, run with the normal Windows Qt platform plugin so PDF tests can access installed fonts. UI smoke checks used two physical Pokit Pro devices in DC voltage mode, HOLD during continuing statistics, a visual low-limit alarm, both channels in a CSV recording with a comment, and PDF export. PDFs were rendered and visually inspected. Multi-day durability remains unvalidated.
 
 For the UI regression check, run `PokitSuiteNative.exe --ui-responsiveness-test` with no other instance open. It draws two 1,000-point jagged traces while the device worker is deliberately stalled for two seconds. Exit code 0 requires the UI heartbeat to stay below 250 ms. `--ui-monitor` logs a one-second UI heartbeat during live measurements.
 

@@ -57,6 +57,7 @@ PokitBridge::PokitBridge(QObject *parent) : QQmlPropertyMap(this, parent)
         connect(m_controller, &PokitController::connectedChanged, refresh, schedule);
         connect(m_controller, &PokitController::meterValueChanged, refresh, schedule);
         connect(m_controller, &PokitController::meterHistoryChanged, refresh, schedule);
+        connect(m_controller, &PokitController::meterToolsChanged, refresh, schedule);
         connect(m_controller, &PokitController::scopeSamplesChanged, refresh, schedule);
         connect(m_controller, &PokitController::scopeStateChanged, refresh, schedule);
         connect(m_controller, &PokitController::scopeMetricsChanged, refresh, schedule);
@@ -91,7 +92,11 @@ void PokitBridge::applySnapshot(const QVariantMap &values)
         if (m_values.value(it.key()) == it.value()) continue;
         // Give Canvas an owned JavaScript array. A QVariantList property is a
         // reference sequence, which can re-read/copy the whole list per sample.
-        if (m_scriptEngine && it->metaType().id() == QMetaType::QVariantList) {
+        if (m_scriptEngine && it.key() == QStringLiteral("meterTools")) {
+            // Own nested point/event arrays too; reading a C++ reference
+            // sequence once per plotted point would repeatedly copy it.
+            insert(it.key(), QVariant::fromValue(m_scriptEngine->toScriptValue(it.value().toMap())));
+        } else if (m_scriptEngine && it->metaType().id() == QMetaType::QVariantList) {
             const auto list = it->toList();
             auto array = m_scriptEngine->newArray(uint(list.size()));
             for (qsizetype index = 0; index < list.size(); ++index)
@@ -123,6 +128,8 @@ void PokitBridge::post(std::function<void(PokitController *)> action)
 }
 
 void PokitBridge::connectDevice() { post([](auto *c) { c->connectDevice(); }); }
+void PokitBridge::meterCommand(const QString &action, int channel, const QVariantMap &options)
+{ post([action,channel,options](auto *c) { c->meterCommand(action,channel,options); }); }
 void PokitBridge::showMultimeter() { post([](auto *c) { c->showMultimeter(); }); }
 void PokitBridge::showScope() { post([](auto *c) { c->showScope(); }); }
 void PokitBridge::scopeSingle() { post([](auto *c) { c->scopeSingle(); }); }

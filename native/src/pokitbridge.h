@@ -24,6 +24,7 @@ public:
     void post(std::function<void(PokitController *)> action);
 
     Q_INVOKABLE void connectDevice();
+    Q_INVOKABLE void meterCommand(const QString &action, int channel, const QVariantMap &options);
     Q_INVOKABLE void saveDeviceColor(const QString &id, const QString &color);
     Q_INVOKABLE void showMultimeter();
     Q_INVOKABLE void showScope();

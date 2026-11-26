@@ -6,6 +6,9 @@ All notable public changes are documented here. The project follows semantic ver
 
 ### Added
 
+- Native DMM workspace with per-channel HOLD/REL, absolute min/max/mean statistics, limit-state alarms and a bounded event list
+- Timestamped DMM trend with independent channel scales, zoom/history navigation, annotations, append-only CSV recording and PDF summary export
+- Offline regression tests for DMM statistics, unit resets, alarms, HOLD/REL, CSV escaping, PDF export and bounded long-running plot snapshots
 - Draggable time and voltage cursors with trigger-relative time, voltage, signed differences and reciprocal time interval; independent visibility and reset controls
 - RUN/STOP for repeated radio-triggered acquisition pairs alongside SINGLE
 - Native Pokit Pro radio-triggered single acquisitions with CH1 or CH2 as the trigger master

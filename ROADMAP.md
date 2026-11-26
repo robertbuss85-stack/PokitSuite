@@ -20,6 +20,7 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 
 - Draggable time and voltage cursors with signed differences and reciprocal time interval
 - Fixed two-by-two channel metric layout with full CH1/CH2 readings and reserved CH3/CH4 positions
+- Dual DMM HOLD/REL and absolute min/max/mean statistics, transition-based limit alarms, timestamped trend zoom/pan, annotations, streaming CSV recording and PDF summary reports
 
 ## Implemented, protocol-tested, hardware-dependent
 
@@ -44,7 +45,7 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 
 - Add deterministic replay fixtures for DSO packet/frame regression tests
 - Validate Pokit Meter and document model-specific capabilities
-- Add native long-duration logger controls, export and annotations
+- Validate native DMM streaming CSV recording during multi-day runs and adapter reconnects; add saved-session replay
 - Improve frequency/duty algorithms for noisy or clipped waveforms
 - Produce a signed installer and reproducible dependency manifest/SBOM
 
@@ -52,6 +53,9 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 
 - Extend native radio-triggered acquisition to CH3/CH4
 - Protocol-oriented views and richer trigger types
+- Snap measurement cursors to waveform edges and extrema
+- Math traces (CH1 minus CH2, sum and ratio), with explicit handling of acquisition timing
+- Phase/edge-delay measurements and A/B encoder direction, count and error analysis after skew/jitter validation
 - Cross-platform validation on Linux and macOS where BLE support permits
 - Guardrailed AI diagnosis recipes and repeatable hardware-in-the-loop tests
 

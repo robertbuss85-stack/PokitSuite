@@ -28,7 +28,7 @@ PokitSuite is a native Windows measurement application for Pokit Pro Bluetooth i
 | MCP measurement tools | Implemented, protocol-tested | 17 tools over stdio; live values require a running native app |
 | Arduino edit/compile/upload loop | Experimental | Backup-aware edits and CLI integration; board/FQBN and physical target remain user-dependent |
 | Four-channel UI | Experimental | CH1 and CH2 are operational; CH3 and CH4 remain planned |
-| Native logger workspace | Planned | DMM history is available; a dedicated long-duration logger UI is not yet native |
+| Native DMM statistics and recording | Implemented, offline-tested; short two-device DC voltage check | HOLD/REL, min/max/mean, limits, timestamped zoom/pan, comments, streaming CSV and PDF summaries; multi-day validation pending. [Guide](docs/MULTIMETER.md) |
 | Legacy browser UI | Experimental/legacy | Retained for compatibility; native Qt application is the supported frontend |
 
 ## Quick start

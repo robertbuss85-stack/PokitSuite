@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QTimer>
 #include <QVariantList>
+#include "metertools.h"
 
 #include <qtpokit/dsoservice.h>
 #include <qtpokit/multimeterservice.h>
@@ -77,6 +78,7 @@ class PokitController final : public QObject
     Q_PROPERTY(int referenceTriggerSample MEMBER m_referenceTriggerSample NOTIFY referenceChanged)
     Q_PROPERTY(bool referenceHasTrigger MEMBER m_referenceHasTrigger NOTIFY referenceChanged)
     Q_PROPERTY(QString activeFeature READ activeFeature NOTIFY activeFeatureChanged)
+    Q_PROPERTY(QVariantMap meterTools READ meterTools NOTIFY meterToolsChanged)
 
 public:
     explicit PokitController(QObject *parent = nullptr);
@@ -132,6 +134,8 @@ public:
     QVariantList referenceSamples() const;
     QString referenceName() const { return m_referenceName; }
     QString activeFeature() const { return m_feature; }
+    QVariantMap meterTools() const { return m_meterTools.state(); }
+    Q_INVOKABLE void meterCommand(const QString &action, int channel, const QVariantMap &options = {}) { m_meterTools.command(action, channel, options); }
 
     Q_INVOKABLE void connectDevice();
     Q_INVOKABLE void saveDeviceColor(const QString &id, const QString &color);
@@ -163,8 +167,10 @@ signals:
     void savedCapturesChanged();
     void referenceChanged();
     void activeFeatureChanged();
+    void meterToolsChanged();
 
 private:
+    MeterTools m_meterTools;
     void setStatus(const QString &status);
     void attachDevice(const QBluetoothDeviceInfo &info);
     void attachSecondDevice(const QBluetoothDeviceInfo &info);
