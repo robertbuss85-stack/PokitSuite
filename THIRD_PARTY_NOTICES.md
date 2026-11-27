@@ -10,6 +10,7 @@ PokitSuite is distributed under GPL-3.0-or-later. The following components retai
 - License: LGPL-3.0-or-later; full notices and license texts are preserved in the vendored directory
 - Snapshot: Dokit 0.6.x development lineage
 - Local modification: DSO metadata decoding accepts compatible 17–22 byte payload variants observed on Pokit Pro firmware
+- Local modification (2026-11-27): dispatch status notifications through the status parser, identify notification/read origin and reject out-of-range switch-position bytes
 
 QtPokit is compiled as a separate shared library. Recipients may replace or rebuild it from the included corresponding source.
 

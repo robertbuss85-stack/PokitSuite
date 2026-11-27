@@ -34,6 +34,9 @@ public:
     Q_INVOKABLE void setScopeTriggerSource(int channel);
     Q_INVOKABLE void setScopeTriggerPosition(double position);
     Q_INVOKABLE void setScopeConfig(const QString &coupling, double voltsPerDiv, int timePerDivUs);
+    Q_INVOKABLE void setScopeChannelVisible(int channel, bool visible);
+    Q_INVOKABLE void setScopeChannelCurrent(int channel, bool current);
+    Q_INVOKABLE void setScopeChannelScale(int channel, double voltsPerDiv, double offset);
     Q_INVOKABLE void setScopeRunning(bool running);
     Q_INVOKABLE void scopeSingle();
     Q_INVOKABLE void saveScopeCapture();

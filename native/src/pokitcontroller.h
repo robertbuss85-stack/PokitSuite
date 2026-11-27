@@ -4,6 +4,9 @@
 #include <QTimer>
 #include <QVariantList>
 #include "metertools.h"
+#include "scopechannels.h"
+#include "switchquery.h"
+#include <QElapsedTimer>
 
 #include <qtpokit/dsoservice.h>
 #include <qtpokit/multimeterservice.h>
@@ -43,7 +46,8 @@ class PokitController final : public QObject
     Q_PROPERTY(bool scopeRunning READ scopeRunning NOTIFY scopeStateChanged)
     Q_PROPERTY(QString scopeTriggerMode MEMBER m_triggerMode NOTIFY scopeStateChanged)
     Q_PROPERTY(double scopeTriggerLevel MEMBER m_triggerLevel NOTIFY scopeStateChanged)
-    Q_PROPERTY(double scopeVoltsPerDiv MEMBER m_scopeVoltsPerDiv NOTIFY scopeStateChanged)
+    Q_PROPERTY(double scopeVoltsPerDiv READ scopeVoltsPerDiv NOTIFY scopeStateChanged)
+    Q_PROPERTY(QVariantList scopeChannels READ scopeChannels NOTIFY scopeStateChanged)
     Q_PROPERTY(int scopeTimePerDivUs MEMBER m_scopeTimePerDivUs NOTIFY scopeStateChanged)
     Q_PROPERTY(QString scopeCoupling MEMBER m_scopeCoupling NOTIFY scopeStateChanged)
     Q_PROPERTY(int scopeTriggerSource READ scopeTriggerSource NOTIFY scopeStateChanged)
@@ -74,6 +78,7 @@ class PokitController final : public QObject
     Q_PROPERTY(QVariantList savedCaptures READ savedCaptures NOTIFY savedCapturesChanged)
     Q_PROPERTY(QVariantList referenceSamples READ referenceSamples NOTIFY referenceChanged)
     Q_PROPERTY(QString referenceName READ referenceName NOTIFY referenceChanged)
+    Q_PROPERTY(QString referenceUnit MEMBER m_referenceUnit NOTIFY referenceChanged)
     Q_PROPERTY(double referenceSampleRate MEMBER m_referenceSampleRate NOTIFY referenceChanged)
     Q_PROPERTY(int referenceTriggerSample MEMBER m_referenceTriggerSample NOTIFY referenceChanged)
     Q_PROPERTY(bool referenceHasTrigger MEMBER m_referenceHasTrigger NOTIFY referenceChanged)
@@ -102,6 +107,11 @@ public:
     QVariantList scopeSamples() const;
     QVariantList scopeSamples2() const;
     bool scopeRunning() const { return m_scopeRunning; }
+    double scopeVoltsPerDiv() const { return m_scopeChannels.at(1).voltsPerDiv; }
+    QVariantList scopeChannels() const;
+    Q_INVOKABLE void setScopeChannelCurrent(int channel, bool current);
+    Q_INVOKABLE void setScopeChannelVisible(int channel, bool visible);
+    Q_INVOKABLE void setScopeChannelScale(int channel, double voltsPerDiv, double offset);
     int scopeTriggerSource() const { return m_scopeTriggerSource; }
     bool scopeRfReady() const;
     bool scopeRfPair() const { return m_scopeRfPair; }
@@ -172,6 +182,12 @@ signals:
 private:
     MeterTools m_meterTools;
     void setStatus(const QString &status);
+    QString scopeChannelNotice(int channel) const;
+    void scopeSwitchChanged(int channel);
+    void clearScopeChannel(int channel);
+    bool refreshScopeSwitch(int channel);
+    void resumeAfterSwitch(int channel);
+    void failSwitchQuery(int channel, quint64 request, const QString &reason);
     void attachDevice(const QBluetoothDeviceInfo &info);
     void attachSecondDevice(const QBluetoothDeviceInfo &info);
     void activateCurrentFeature();
@@ -185,7 +201,7 @@ private:
     void startScope();
     void startMeter2();
     void startScope2();
-    DsoService::Settings scopeSettings() const;
+    DsoService::Settings scopeSettings(int channel = 1) const;
     void startRfCapture();
     void stopRfCapture();
     void clearRfPair();
@@ -234,6 +250,8 @@ private:
     QString m_meterUnit2 = QStringLiteral("V DC");
     StatusService *m_meterStatus[2]{};
     std::optional<StatusService::SwitchPosition> m_meterSwitchPosition[2];
+    SwitchQuery m_switchQuery[2];
+    QElapsedTimer m_switchClock;
     MultimeterService::Mode m_configuredMeterMode[2]{};
     bool m_meterValid = false;
     bool m_meterValid2 = false;
@@ -261,6 +279,7 @@ private:
     RfStage m_rfStage = RfStage::Idle;
     RfFrame m_rfFrames[2];
     DsoService::Settings m_rfSettings{};
+    DsoService::Settings m_rfSettings2{};
     int m_scopeTriggerSource = 0;
     double m_scopeTriggerPosition = 0.5;
     bool m_rfNotificationsReady[2]{};
@@ -273,7 +292,7 @@ private:
     double m_meterValue = 0.0;
     double m_meterValue2 = 0.0;
     double m_triggerLevel = 0.0;
-    double m_scopeVoltsPerDiv = 1.0;
+    ScopeChannels m_scopeChannels;
     double m_scopeVpp = 0.0;
     double m_scopeMinimum = 0.0;
     double m_scopeMaximum = 0.0;
@@ -311,6 +330,7 @@ private:
     QVariantList m_savedCaptures;
     QVector<double> m_referenceValues;
     QString m_referenceName;
+    QString m_referenceUnit = QStringLiteral("V");
     double m_referenceSampleRate = 0.0;
     int m_referenceTriggerSample = 0;
     bool m_referenceHasTrigger = false;

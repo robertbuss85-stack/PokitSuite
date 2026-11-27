@@ -6,6 +6,9 @@ All notable public changes are documented here. The project follows semantic ver
 
 ### Added
 
+- Per-channel DC/AC current acquisition in the DSO, explicit low/high-current ranges, switch-position gating, A/mA/µA scales and current cursors
+- Unit-aware voltage/current captures, mixed-unit reports and CSV, ampere telemetry and MCP frame handling
+- Scope channel show/hide buttons, independent channel V/div and vertical offsets, selected-channel voltage cursors and per-device acquisition ranges in independent and radio modes
 - Native DMM workspace with per-channel HOLD/REL, absolute min/max/mean statistics, limit-state alarms and a bounded event list
 - Timestamped DMM trend with independent channel scales, zoom/history navigation, annotations, append-only CSV recording and PDF summary export
 - Offline regression tests for DMM statistics, unit resets, alarms, HOLD/REL, CSV escaping, PDF export and bounded long-running plot snapshots
@@ -18,6 +21,9 @@ All notable public changes are documented here. The project follows semantic ver
 
 ### Fixed
 
+- Forward Dokit status notifications to switch-position handling; validate switch bytes and serialize status reads with tokenized deadlines, retry backoff and per-device recovery
+- Resolve native telemetry and MCP command files relative to the installation/project rather than the launch working directory
+- Export every channel with stored scope data to PDF/JSON/CSV, including hidden channels, independent scales and offsets; add an overview and per-channel report pages
 - Replace the cramped scope readout with a fixed two-by-two channel grid, larger values and complete CH2 metrics (including period and cycles); reserve inactive CH3/CH4 slots
 - Restore saved comparison curves in radio-trigger mode and add explicit show/hide controls
 - Render saved curves using their recorded sample rate instead of stretching them across the display; preserve trigger origin for new radio captures

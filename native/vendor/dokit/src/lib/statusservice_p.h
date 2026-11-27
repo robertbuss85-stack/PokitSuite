@@ -24,10 +24,13 @@ public:
 
     static StatusService::DeviceCharacteristics parseDeviceCharacteristics(const QByteArray &value);
     static StatusService::Status parseStatus(const QByteArray &value);
+    void processStatusUpdate(const QByteArray &value, bool notification=false);
     static std::optional<StatusService::TorchStatus> parseTorchStatus(const QByteArray &value);
     static std::optional<StatusService::ButtonStatus> parseButtonPress(const QByteArray &value);
 
 protected:
+    void characteristicChanged(const QLowEnergyCharacteristic &characteristic,
+                               const QByteArray &value) override;
     void serviceDiscovered(const QBluetoothUuid &newService) override;
 
     void characteristicRead(const QLowEnergyCharacteristic &characteristic,

@@ -35,6 +35,8 @@ qt_add_executable(PokitSuiteNative
   src/main.cpp
   src/metertools.cpp
   src/metertools.h
+  src/scopeexport.cpp
+  src/scopeexport.h
   src/pokitbridge.cpp
   src/pokitbridge.h
   src/pokitcontroller.cpp
@@ -53,6 +55,21 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(SwitchQueryTest tests/switchquery_test.cpp)
+  target_include_directories(SwitchQueryTest PRIVATE src ${DOKIT_ROOT}/src/lib)
+  target_link_libraries(SwitchQueryTest PRIVATE Qt6::Core Qt6::Bluetooth QtPokit)
+  add_test(NAME switch-query COMMAND SwitchQueryTest)
+  add_executable(ScopeExportTest tests/scopeexport_test.cpp src/scopeexport.cpp)
+  target_include_directories(ScopeExportTest PRIVATE src)
+  target_link_libraries(ScopeExportTest PRIVATE Qt6::Core Qt6::Gui)
+  add_test(NAME scope-export COMMAND ScopeExportTest)
+  if(NOT WIN32)
+    set_tests_properties(scope-export PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  endif()
+  add_executable(ScopeChannelsTest tests/scopechannels_test.cpp)
+  target_include_directories(ScopeChannelsTest PRIVATE src)
+  target_link_libraries(ScopeChannelsTest PRIVATE Qt6::Core)
+  add_test(NAME scope-channels COMMAND ScopeChannelsTest)
   add_executable(MeterToolsTest tests/metertools_test.cpp src/metertools.cpp src/metertools.h)
   target_include_directories(MeterToolsTest PRIVATE src)
   target_link_libraries(MeterToolsTest PRIVATE Qt6::Core Qt6::Gui)

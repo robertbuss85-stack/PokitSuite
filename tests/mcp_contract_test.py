@@ -2,6 +2,7 @@
 import asyncio
 from pathlib import Path
 import sys
+import runpy
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -16,6 +17,17 @@ EXPECTED_TOOLS = {
 
 async def main() -> None:
     root = Path(__file__).resolve().parents[1]
+    module = runpy.run_path(str(root / "mcp" / "pokitsuite_mcp.py"))
+    namespace = module["get_scope_frame"].__globals__
+    namespace["_read_state"] = lambda: {"scope": {"unit": "A", "waveform": list(range(60)), "waveform_a": list(range(60)), "metrics": {"vpp_a": .1}}}
+    frame = module["get_scope_frame"](max_points=20)
+    assert frame["returned_points"] == 20 and "waveform_v" not in frame
+    assert len(frame["waveform_a"]) == 20 and len(frame["waveform"]) == 20
+    assert not any(key.startswith("waveform") for key in module["get_scope_metrics"]())
+    assert not module["evaluate_scope_reference"](expected_vpp_v=1)["pass"]
+    namespace["_read_state"] = lambda: {"scope2": {"unit": "A", "waveform_a": [0.01, 0.02], "metrics": {"vpp_a": .01}}}
+    assert module["get_scope_frame"](channel=2)["waveform_a"] == [.01, .02]
+    assert module["get_scope_metrics"](channel=2)["unit"] == "A"
     server = StdioServerParameters(command=sys.executable,
         args=[str(root / "mcp" / "pokitsuite_mcp.py")], cwd=str(root))
     async with stdio_client(server) as (reader, writer):

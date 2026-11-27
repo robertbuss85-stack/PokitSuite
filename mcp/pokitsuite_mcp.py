@@ -112,23 +112,30 @@ def get_multimeter_reading() -> dict[str, Any]:
 
 
 @mcp.tool()
-def get_scope_metrics() -> dict[str, Any]:
+def get_scope_metrics(channel: int = 1) -> dict[str, Any]:
     """Return acquisition settings and calculated signal metrics without waveform samples."""
-    scope = dict(_read_state().get("scope", {}))
+    if channel not in (1, 2):
+        raise ValueError("channel must be 1 or 2")
+    scope = dict(_read_state().get("scope" if channel == 1 else "scope2", {}))
     scope.pop("waveform_v", None)
+    scope.pop("waveform_a", None)
+    scope.pop("waveform", None)
     return scope
 
 
 @mcp.tool()
-def get_scope_frame(max_points: int = 1000) -> dict[str, Any]:
+def get_scope_frame(max_points: int = 1000, channel: int = 1) -> dict[str, Any]:
     """Return the latest complete scope frame, optionally decimated to max_points."""
-    scope = dict(_read_state().get("scope", {}))
-    waveform = scope.get("waveform_v", [])
+    if channel not in (1, 2):
+        raise ValueError("channel must be 1 or 2")
+    scope = dict(_read_state().get("scope" if channel == 1 else "scope2", {}))
+    waveform = scope.get("waveform", scope.get("waveform_v", scope.get("waveform_a", [])))
     limit = max(20, min(int(max_points), 1000))
     if len(waveform) > limit:
         step = len(waveform) / limit
         waveform = [waveform[min(int(index * step), len(waveform) - 1)] for index in range(limit)]
-    scope["waveform_v"] = waveform
+    scope["waveform"] = waveform
+    scope["waveform_a" if scope.get("unit") == "A" else "waveform_v"] = waveform
     scope["returned_points"] = len(waveform)
     return scope
 
@@ -142,6 +149,8 @@ def evaluate_scope_reference(expected_frequency_hz: float | None = None,
                              duty_tolerance_percent: float = 3.0) -> dict[str, Any]:
     """Compare the latest complete frame with expected signal limits."""
     state = _read_state()
+    if expected_vpp_v is not None and state.get("scope", {}).get("unit") == "A":
+        return {"pass": False, "error": "CH1 measures current (A); a voltage reference cannot be applied."}
     measured = state.get("scope", {}).get("metrics", {})
     violations: list[dict[str, Any]] = []
     checks: dict[str, Any] = {}
@@ -174,6 +183,8 @@ def wait_for_scope_update(previous_timestamp: str = "", timeout_seconds: float =
         if (state.get("timestamp_utc") != previous_timestamp and state.get("scope", {}).get("samples", 0) > 0):
             scope = dict(state["scope"])
             scope.pop("waveform_v", None)
+            scope.pop("waveform_a", None)
+            scope.pop("waveform", None)
             return {"updated": True, "timestamp_utc": state.get("timestamp_utc"), "scope": scope}
         time.sleep(0.2)
     return {"updated": False, "error": "No new complete scope frame before timeout"}
@@ -200,7 +211,7 @@ def find_arduino_sketches(max_results: int = 50) -> dict[str, Any]:
 def configure_scope(time_per_div_us: int, volts_per_div: float = 1.0,
                     coupling: str = "DC", trigger_mode: str = "free",
                     trigger_level_v: float = 0.0) -> dict[str, Any]:
-    """Configure and start CH1. trigger_mode: free, rising or falling."""
+    """Configure/start CH1. The legacy volts_per_div argument uses the active base unit (V or A). trigger_mode: free, rising or falling."""
     if coupling not in {"DC", "AC"}:
         raise ValueError("coupling must be DC or AC")
     if trigger_mode not in {"free", "rising", "falling"}:

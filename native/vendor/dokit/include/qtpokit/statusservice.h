@@ -179,6 +179,7 @@ Q_SIGNALS:
     void deviceNameRead(const QString &deviceName);
     void deviceNameWritten();
     void deviceStatusRead(const StatusService::Status &status);
+    void deviceStatusUpdate(const StatusService::Status &status, bool notification);
     void deviceLedFlashed();
     void torchStatusRead(const TorchStatus &status);
     void torchStatusWritten();

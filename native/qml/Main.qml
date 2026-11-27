@@ -63,9 +63,19 @@ ApplicationWindow {
     readonly property var deviceColorNames: ["Rot", "Lichtgrau", "Gelb", "Grün"]
     readonly property var deviceColors: ["#ff6666", "#d3d3d3", "#ffd629", "#55df89"]
     property color reference: "#b78cff"
-    property real voltsDiv: pokit.scopeVoltsPerDiv
+    property var scopeChannels: pokit.scopeChannels
+    property int selectedScopeChannel: 1
+    readonly property bool scopeSecondAvailable: pokit.connected2 || pokit.scopeSamples2.length>0
+    onScopeSecondAvailableChanged: {if(!scopeSecondAvailable)selectedScopeChannel=1}
+    property real voltsDiv: scopeChannels[selectedScopeChannel-1].voltsPerDiv
+    readonly property string selectedScopeUnit: scopeChannels[selectedScopeChannel-1].unit
+    readonly property string triggerUnit: scopeChannels[pokit.scopeTriggerSource===2?1:0].unit
+    readonly property var verticalScales: selectedScopeUnit==="A"
+        ? [0.000001,0.000002,0.000005,0.00001,0.00002,0.00005,0.0001,0.0002,0.0005,0.001,0.002,0.005,0.01,0.02,0.05,0.1,0.2,0.5,1,2].filter(v=>v<=scopeChannels[selectedScopeChannel-1].maxScale)
+        : [.01,.02,.05,.1,.2,.5,1,2,5,10,20,50]
     property int timeDivUs: pokit.scopeTimePerDivUs
-    property real verticalPosition: 0.0
+    property real verticalPosition: scopeChannels[selectedScopeChannel-1].offset
+    readonly property real triggerVoltsDiv: scopeChannels[pokit.scopeTriggerSource===2?1:0].voltsPerDiv
     property real triggerPosition: 0.5
     property bool timeCursorsVisible: true
     property bool voltageCursorsVisible: true
@@ -84,7 +94,12 @@ ApplicationWindow {
         if (magnitude < 1000000) return (us / 1000).toFixed(3) + " ms"
         return (us / 1000000).toFixed(4) + " s"
     }
-    function cursorVoltage(v) { return Math.abs(v) < 1 ? (v * 1000).toFixed(2) + " mV" : v.toFixed(3) + " V" }
+    function amplitude(v,unit) {
+        if(unit==="A"&&Math.abs(v)<.001)return(v*1e6).toFixed(2)+" µA"
+        if(Math.abs(v)<1)return(v*1000).toFixed(2)+(unit==="A"?" mA":" mV")
+        return v.toFixed(3)+" "+unit
+    }
+    function cursorVoltage(v) { return amplitude(v,selectedScopeUnit) }
     function cursorFrequency() {
         if (Math.abs(cursorDeltaUs) < 0.000001) return "—"
         const hz = 1000000 / Math.abs(cursorDeltaUs)
@@ -93,8 +108,8 @@ ApplicationWindow {
     property var timeBases: [10,20,50,100,200,500,1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000]
 
     function engineeringTime(us) { if(us<1000)return us+" µs/div";if(us<1000000)return(us/1000)+" ms/div";return(us/1000000)+" s/div" }
-    function engineeringVoltage(v) { return v<1?Math.round(v*1000)+" mV/div":v+" V/div" }
-    function setTimebaseIndex(index) { let i=Math.max(0,Math.min(timeBases.length-1,index));pokit.setScopeConfig(coupling.currentText,root.voltsDiv,timeBases[i]) }
+    function engineeringVoltage(v,unit) { return amplitude(v,unit||"V")+"/div" }
+    function setTimebaseIndex(index) { let i=Math.max(0,Math.min(timeBases.length-1,index));pokit.setScopeConfig(coupling.currentText,pokit.scopeVoltsPerDiv,timeBases[i]) }
     function metricTime(seconds) { if(seconds<=0)return "—";if(seconds<.001)return(seconds*1000000).toFixed(1)+" µs";if(seconds<1)return(seconds*1000).toFixed(2)+" ms";return seconds.toFixed(2)+" s" }
 
     component ScopeMetric: Column {
@@ -127,14 +142,14 @@ ApplicationWindow {
         GridLayout { anchors.fill:parent;anchors.margins:9;columns:4;columnSpacing:12;rowSpacing:8
             Column { Layout.fillWidth:true;Layout.minimumWidth:0;Layout.preferredWidth:100;spacing:2
                 Label { text:"CH"+metrics.channel;color:metrics.channelColor;font.pixelSize:17;font.bold:true }
-                Label { width:parent.width;text:metrics.hasData?"Messwerte":metrics.available?"Warte auf Daten":"Nicht verbunden";color:"#9aafbd";font.pixelSize:11;elide:Text.ElideRight }
+                Label { width:parent.width;text:metrics.available&&!root.scopeChannels[metrics.channel-1].visible?"Ausgeblendet":metrics.hasData?"Messwerte":metrics.available?"Warte auf Daten":"Nicht verbunden";color:"#9aafbd";font.pixelSize:11;elide:Text.ElideRight }
             }
-            ScopeMetric { caption:"Spitze–Spitze";reading:metrics.hasData?metrics.vpp.toFixed(3)+" V":"—" }
+            ScopeMetric { caption:"Spitze–Spitze";reading:metrics.hasData?root.amplitude(metrics.vpp,root.scopeChannels[metrics.channel-1].unit):"—" }
             ScopeMetric { caption:"Frequenz";reading:metrics.hasData&&metrics.frequency>0?(metrics.frequency>=1000?(metrics.frequency/1000).toFixed(2)+" kHz":metrics.frequency.toFixed(1)+" Hz"):"—" }
             ScopeMetric { caption:"Periodendauer";reading:metrics.hasData?root.metricTime(metrics.period):"—" }
-            ScopeMetric { caption:"RMS";reading:metrics.hasData?metrics.rms.toFixed(3)+" V":"—" }
-            ScopeMetric { caption:"Minimum";reading:metrics.hasData?metrics.minimum.toFixed(3)+" V":"—" }
-            ScopeMetric { caption:"Maximum";reading:metrics.hasData?metrics.maximum.toFixed(3)+" V":"—" }
+            ScopeMetric { caption:"RMS";reading:metrics.hasData?root.amplitude(metrics.rms,root.scopeChannels[metrics.channel-1].unit):"—" }
+            ScopeMetric { caption:"Minimum";reading:metrics.hasData?root.amplitude(metrics.minimum,root.scopeChannels[metrics.channel-1].unit):"—" }
+            ScopeMetric { caption:"Maximum";reading:metrics.hasData?root.amplitude(metrics.maximum,root.scopeChannels[metrics.channel-1].unit):"—" }
             ScopeMetric { caption:"Zyklen";reading:metrics.hasData?metrics.cycles.toFixed(0):"—" }
         }
     }
@@ -182,7 +197,7 @@ ApplicationWindow {
                                 }
                                 Item { Layout.fillWidth:true }
                                 CheckBox { text:"Zeitlinien";checked:root.timeCursorsVisible;onToggled:root.timeCursorsVisible=checked;palette.windowText:"#8de5ff" }
-                                CheckBox { text:"Spannungslinien";checked:root.voltageCursorsVisible;onToggled:root.voltageCursorsVisible=checked;palette.windowText:"#ffcf82" }
+                                CheckBox { text:"U/I-Linien";checked:root.voltageCursorsVisible;onToggled:root.voltageCursorsVisible=checked;palette.windowText:"#ffcf82" }
                                 Button { text:"↺";implicitWidth:32;ToolTip.visible:hovered;ToolTip.text:"Messlinien zurücksetzen";onClicked:{root.cursorT1=.3;root.cursorT2=.7;root.cursorU1=.3;root.cursorU2=.7} }
                                 Label { text:pokit.scopeRunning?"● ACQUIRE":"■ STOP";color:pokit.scopeRunning?"#7eff8c":"#ffb56b";font.bold:true }
                                 Label { text:pokit.scopeSampleRate>0?Math.round(pokit.scopeSampleRate/1000)+" kS/s":"— kS/s";color:"#b9c6bc" }
@@ -192,7 +207,7 @@ ApplicationWindow {
                                     function onScopeSamplesChanged(){scopeCanvas.requestPaint()}
                                     function onReferenceChanged(){scopeCanvas.requestPaint()}
                                 }
-                                Connections { target:root;function onCh1Changed(){scopeCanvas.requestPaint()} function onCh2Changed(){scopeCanvas.requestPaint()} function onVoltsDivChanged(){scopeCanvas.requestPaint()} function onTimeDivUsChanged(){scopeCanvas.requestPaint()} }
+                                Connections { target:root;function onCh1Changed(){scopeCanvas.requestPaint()} function onCh2Changed(){scopeCanvas.requestPaint()} function onScopeChannelsChanged(){scopeCanvas.requestPaint()} function onVoltsDivChanged(){scopeCanvas.requestPaint()} function onVerticalPositionChanged(){scopeCanvas.requestPaint()} function onTimeDivUsChanged(){scopeCanvas.requestPaint()} }
                                 onWidthChanged:requestPaint();onHeightChanged:requestPaint()
                                 onPaint:{
                                     const paintStarted = Date.now()
@@ -202,10 +217,14 @@ ApplicationWindow {
                                     c.strokeStyle="#67806d";c.beginPath();c.moveTo(width/2,0);c.lineTo(width/2,height);c.stroke();c.beginPath();c.moveTo(0,height/2);c.lineTo(width,height/2);c.stroke()
                                     const triggerFraction = pokit.scopeRfPair ? pokit.scopeRfTriggerFraction : root.triggerPosition
                                     let tx=triggerFraction*width;c.fillStyle="#ff8c42";c.beginPath();c.moveTo(tx-7,0);c.lineTo(tx+7,0);c.lineTo(tx,10);c.closePath();c.fill()
-                                    let zero=height/2-root.verticalPosition/root.voltsDiv*height/8;c.fillStyle=root.ch1;c.beginPath();c.moveTo(0,zero);c.lineTo(10,zero-6);c.lineTo(10,zero+6);c.closePath();c.fill()
+                                    for(let channel=0;channel<2;++channel){const config=root.scopeChannels[channel]
+                                        if(!config.visible)continue
+                                        const zero=height/2+config.offset/config.voltsPerDiv*height/8
+                                        c.fillStyle=channel===0?root.ch1:root.ch2;c.beginPath();c.moveTo(0,zero);c.lineTo(10,zero-6);c.lineTo(10,zero+6);c.closePath();c.fill()
+                                    }
                                     let saved=pokit.referenceSamples
                                     const visibleWindowUs = pokit.scopeRfPair ? pokit.scopeRfWindowUs : root.timeDivUs * 10
-                                    function trace(values, color, alpha, sampleRate, triggerSample, originX) {
+                                    function trace(values, color, alpha, sampleRate, triggerSample, originX, voltsDiv, offset) {
                                         if (values.length < 2) return
                                         c.save()
                                         c.beginPath()
@@ -221,7 +240,7 @@ ApplicationWindow {
                                             const x = sampleRate > 0
                                                 ? originX + (i - triggerSample) * width * 1e6 / (sampleRate * visibleWindowUs)
                                                 : i * width / (values.length - 1)
-                                            const y = height / 2 - ((values[i] - root.verticalPosition) / root.voltsDiv) * height / 8
+                                            const y = height / 2 - ((values[i] - offset) / voltsDiv) * height / 8
                                             if (i === 0) c.moveTo(x, y)
                                             else c.lineTo(x, y)
                                             // Bound rasterizer work for noisy, self-intersecting
@@ -236,11 +255,12 @@ ApplicationWindow {
                                         c.restore()
                                     }
                                     const alignReferenceTrigger = pokit.scopeRfPair && pokit.referenceHasTrigger
-                                    trace(saved, root.reference, .85, pokit.referenceSampleRate,
+                                    const referenceIndex=root.scopeChannels.findIndex((c,index)=>index<2&&c.unit===(pokit.referenceUnit||"V"))
+                                    if(referenceIndex>=0)trace(saved, root.reference, .85, pokit.referenceSampleRate,
                                           alignReferenceTrigger ? pokit.referenceTriggerSample : 0,
-                                          alignReferenceTrigger ? tx : 0)
-                                    trace(b, root.ch2, 1, pokit.scopeRfPair ? pokit.scopeSampleRate2 : 0, pokit.scopeRfTriggerSample2, tx)
-                                    trace(a, root.ch1, 1, pokit.scopeRfPair ? pokit.scopeSampleRate : 0, pokit.scopeRfTriggerSample, tx)
+                                          alignReferenceTrigger ? tx : 0,root.scopeChannels[referenceIndex].voltsPerDiv,root.scopeChannels[referenceIndex].offset)
+                                    if(root.scopeChannels[1].visible)trace(b, root.ch2, 1, pokit.scopeRfPair ? pokit.scopeSampleRate2 : 0, pokit.scopeRfTriggerSample2, tx,root.scopeChannels[1].voltsPerDiv,root.scopeChannels[1].offset)
+                                    if(root.scopeChannels[0].visible)trace(a, root.ch1, 1, pokit.scopeRfPair ? pokit.scopeSampleRate : 0, pokit.scopeRfTriggerSample, tx,root.scopeChannels[0].voltsPerDiv,root.scopeChannels[0].offset)
                                     if (Date.now() - paintStarted > 100) console.warn("Scope paint took", Date.now() - paintStarted, "ms")
                                 }
                                 MouseArea { anchors.fill:parent;acceptedButtons:Qt.NoButton
@@ -292,7 +312,7 @@ ApplicationWindow {
                                                 y:Math.max(-voltageCursor.y, Math.min(-18, voltageCursor.parent.height-voltageCursor.y-height))
                                                 width:voltageText.implicitWidth+12;height:26;radius:3;color:"#302418";border.color:"#ffcf82"
                                                 Label { id:voltageText;anchors.centerIn:parent;color:"#ffe0b0";font.pixelSize:12
-                                                    text:"U"+(voltageCursor.index+1)+"  "+root.cursorVoltage(root.verticalPosition+(0.5-voltageCursor.fraction)*root.voltsDiv*8)
+                                                    text:(root.selectedScopeUnit==="A"?"I":"U")+(voltageCursor.index+1)+" · CH"+root.selectedScopeChannel+"  "+root.cursorVoltage(root.verticalPosition+(0.5-voltageCursor.fraction)*root.voltsDiv*8)
                                                 }
                                             }
                                             MouseArea { anchors.fill:parent;cursorShape:Qt.SizeVerCursor
@@ -314,19 +334,20 @@ ApplicationWindow {
                                         Label { id:cursorResult;anchors.fill:parent;anchors.margins:6;color:"#eef7fa";font.pixelSize:12;elide:Text.ElideRight
                                             text:(root.timeCursorsVisible?"Δt (T2−T1)  "+root.cursorTime(root.cursorDeltaUs)+"    1/|Δt|  "+root.cursorFrequency():"")
                                                 +(root.timeCursorsVisible&&root.voltageCursorsVisible?"     ·     ":"")
-                                                +(root.voltageCursorsVisible?"ΔU (U2−U1)  "+root.cursorVoltage(root.cursorDeltaV):"")
+                                                +(root.voltageCursorsVisible?(root.selectedScopeUnit==="A"?"ΔI CH":"ΔU CH")+root.selectedScopeChannel+(root.selectedScopeUnit==="A"?" (I2−I1)  ":" (U2−U1)  ")+root.cursorVoltage(root.cursorDeltaV):"")
                                         }
                                     }
                                 }
                             }
                             RowLayout { Layout.fillWidth:true
                                 Label { text:"CH1";color:"#171300";font.bold:true;padding:4;background:Rectangle{color:root.ch1;radius:2} }
-                                Label { text:root.engineeringVoltage(root.voltsDiv);color:root.ch1;font.bold:true }
-                                Label { visible:pokit.connected2;text:"CH2";color:"#07100b";font.bold:true;padding:4;background:Rectangle{color:root.ch2;radius:2} }
+                                Label { text:root.scopeChannels[0].visible?root.engineeringVoltage(root.scopeChannels[0].voltsPerDiv,root.scopeChannels[0].unit):"AUS";color:root.ch1;font.bold:true }
+                                Label { visible:pokit.connected2||pokit.scopeSamples2.length>0;text:"CH2";color:"#07100b";font.bold:true;padding:4;background:Rectangle{color:root.ch2;radius:2} }
+                                Label { visible:pokit.connected2||pokit.scopeSamples2.length>0;text:root.scopeChannels[1].visible?root.engineeringVoltage(root.scopeChannels[1].voltsPerDiv,root.scopeChannels[1].unit):"AUS";color:root.ch2;font.bold:true }
                                 Item { Layout.fillWidth:true }
                                 Label { text:"M  "+root.engineeringTime(pokit.scopeRfPair ? pokit.scopeRfWindowUs / 10 : root.timeDivUs);color:"#d8e0d9";font.bold:true }
                                 Item { Layout.fillWidth:true }
-                                Label { text:"Trig "+triggerMode.currentText+"  "+(triggerLevel.value/100).toFixed(2)+" V";color:"#ff9b58";font.bold:true }
+                                Label { text:"Trig "+triggerMode.currentText+"  "+root.amplitude(pokit.scopeTriggerLevel,root.triggerUnit);color:"#ff9b58";font.bold:true }
                             }
                         }
                     }
@@ -335,13 +356,30 @@ ApplicationWindow {
                         ScrollView { anchors.fill:parent;anchors.margins:9;clip:true
                             ColumnLayout { width:294;spacing:8
                                 Label { text:"POKIT DSO · 4 CHANNEL READY";color:"#26333a";font.pixelSize:15;font.bold:true }
-                                RowLayout { Repeater { model:4;Button { required property int index;text:"CH"+(index+1);enabled:index===0||(index===1&&pokit.connected2);highlighted:enabled;Layout.fillWidth:true } } }
-                                GroupBox { title:pokit.connected2?"VERTICAL · CH1 + CH2":"VERTICAL · CH1";Layout.fillWidth:true
+                                RowLayout { Repeater { model:4;Button { required property int index;text:"CH"+(index+1);enabled:index===0||(index===1&&(pokit.connected2||pokit.scopeSamples2.length>0));checkable:true;checked:root.scopeChannels[index].visible;highlighted:enabled&&checked;Layout.fillWidth:true
+                                    ToolTip.visible:hovered;ToolTip.text:enabled?"CH"+(index+1)+(checked?" ausblenden":" einblenden"):"Kanal noch nicht verfügbar"
+                                    onClicked:pokit.setScopeChannelVisible(index+1,!root.scopeChannels[index].visible)
+                                } } }
+                                GroupBox { title:"VERTICAL · CH"+root.selectedScopeChannel;Layout.fillWidth:true
                                     ColumnLayout { anchors.fill:parent
-                                        RowLayout { Label{text:"Kopplung";Layout.fillWidth:true} ComboBox{id:coupling;model:["DC","AC"];currentIndex:pokit.scopeCoupling==="AC"?1:0;onActivated:pokit.setScopeConfig(currentText,root.voltsDiv,root.timeDivUs)} }
-                                        RowLayout { Label{text:"Volt / Div";Layout.fillWidth:true} ComboBox{id:voltsBox;model:["10 mV","20 mV","50 mV","100 mV","200 mV","500 mV","1 V","2 V","5 V","10 V","20 V","50 V"];currentIndex:[.01,.02,.05,.1,.2,.5,1,2,5,10,20,50].indexOf(root.voltsDiv);onActivated:{let v=[.01,.02,.05,.1,.2,.5,1,2,5,10,20,50][currentIndex];pokit.setScopeConfig(coupling.currentText,v,root.timeDivUs)}} }
-                                        Label { text:"Position  "+root.verticalPosition.toFixed(2)+" V" }
-                                        Slider { id:verticalSlider;Layout.fillWidth:true;from:-4*root.voltsDiv;to:4*root.voltsDiv;value:0;onMoved:{root.verticalPosition=value;scopeCanvas.requestPaint()} }
+                                        RowLayout { Label{text:"Kanal einstellen";Layout.fillWidth:true} ComboBox {model:pokit.connected2||pokit.scopeSamples2.length>0?["CH1","CH2"]:["CH1"];currentIndex:root.selectedScopeChannel-1;onActivated:root.selectedScopeChannel=currentIndex+1} }
+                                        RowLayout { Label{text:"Messgröße";Layout.fillWidth:true}
+                                            ComboBox {model:["Spannung","Strom"];currentIndex:root.selectedScopeUnit==="A"?1:0;onActivated:pokit.setScopeChannelCurrent(root.selectedScopeChannel,currentIndex===1)}
+                                        }
+                                        Label {Layout.fillWidth:true;wrapMode:Text.WordWrap;text:root.scopeChannels[root.selectedScopeChannel-1].switch;color:"#344955";font.pixelSize:12}
+                                        Label {Layout.fillWidth:true;wrapMode:Text.WordWrap;text:root.scopeChannels[root.selectedScopeChannel-1].switchWarning || "";visible:text.length>0;color:"#79551c";font.pixelSize:12}
+                                        Label {Layout.fillWidth:true;wrapMode:Text.WordWrap;visible:text.length>0;text:root.scopeChannels[root.selectedScopeChannel-1].notice;color:"#a42828";font.pixelSize:12;font.bold:true}
+                                        Label {Layout.fillWidth:true;wrapMode:Text.WordWrap;visible:root.selectedScopeUnit==="A";text:"Strom in Reihe messen. Max. 10 A; über 6 A: höchstens 30 s je 15 min (Handbuch).";color:"#703c24";font.pixelSize:11}
+                                        RowLayout { Label{text:"Kopplung (beide)";Layout.fillWidth:true} ComboBox{id:coupling;model:["DC","AC"];currentIndex:pokit.scopeCoupling==="AC"?1:0;onActivated:pokit.setScopeConfig(currentText,pokit.scopeVoltsPerDiv,root.timeDivUs)} }
+                                        RowLayout { Label{text:root.selectedScopeUnit==="A"?"Strom / Div":"Volt / Div";Layout.fillWidth:true}
+                                            ComboBox { id:voltsBox;model:root.verticalScales.map(v=>root.engineeringVoltage(v,root.selectedScopeUnit));currentIndex:root.verticalScales.indexOf(root.voltsDiv)
+                                                displayText:root.engineeringVoltage(root.voltsDiv,root.selectedScopeUnit)
+                                                onActivated:pokit.setScopeChannelScale(root.selectedScopeChannel,root.verticalScales[currentIndex],root.verticalPosition)
+                                            }
+                                        }
+                                        Label { text:"Position  "+root.amplitude(root.verticalPosition,root.selectedScopeUnit) }
+                                        Slider { id:verticalSlider;Layout.fillWidth:true;from:-4*root.voltsDiv;to:4*root.voltsDiv;value:root.verticalPosition;onMoved:pokit.setScopeChannelScale(root.selectedScopeChannel,root.voltsDiv,value) }
+
                                     }
                                 }
                                 GroupBox { title:"HORIZONTAL";Layout.fillWidth:true
@@ -355,7 +393,7 @@ ApplicationWindow {
                                 }
                                 GroupBox { title:"TRIGGER";Layout.fillWidth:true
                                     ColumnLayout { anchors.fill:parent
-                                        RowLayout { Label{text:"Modus";Layout.fillWidth:true} ComboBox{id:triggerMode;model:["Auto / Sofort","Steigend","Fallend"];currentIndex:["free","rising","falling"].indexOf(pokit.scopeTriggerMode);displayText:currentIndex===0?(pokit.scopeTriggerSource>0?"Sofort":"Auto"):currentText;onActivated:pokit.setScopeTrigger(["free","rising","falling"][currentIndex],triggerLevel.value/100)} }
+                                        RowLayout { Label{text:"Modus";Layout.fillWidth:true} ComboBox{id:triggerMode;model:["Auto / Sofort","Steigend","Fallend"];currentIndex:["free","rising","falling"].indexOf(pokit.scopeTriggerMode);displayText:currentIndex===0?(pokit.scopeTriggerSource>0?"Sofort":"Auto"):currentText;onActivated:pokit.setScopeTrigger(["free","rising","falling"][currentIndex],triggerLevel.value)} }
                                         RowLayout {
                                             Label { text:"Quelle"; Layout.fillWidth:true }
                                             ComboBox {
@@ -367,8 +405,8 @@ ApplicationWindow {
                                                 }
                                             }
                                         }
-                                        Label { text:"Pegel  "+(triggerLevel.value/100).toFixed(2)+" V" }
-                                        Slider { id:triggerLevel;Layout.fillWidth:true;from:-400*root.voltsDiv;to:400*root.voltsDiv;value:pokit.scopeTriggerLevel*100;stepSize:1;onMoved:pokit.setScopeTrigger(["free","rising","falling"][triggerMode.currentIndex],value/100) }
+                                        Label { text:"Pegel  "+root.amplitude(pokit.scopeTriggerLevel,root.triggerUnit) }
+                                        Slider { id:triggerLevel;Layout.fillWidth:true;from:-4*root.triggerVoltsDiv;to:4*root.triggerVoltsDiv;value:pokit.scopeTriggerLevel;stepSize:0;onMoved:pokit.setScopeTrigger(["free","rising","falling"][triggerMode.currentIndex],value) }
                                     }
                                 }
                                 GroupBox { title:"CAPTURE & VERGLEICH";Layout.fillWidth:true
@@ -379,7 +417,7 @@ ApplicationWindow {
                                         }
                                         ComboBox { id:captureBox;Layout.fillWidth:true;model:pokit.savedCaptures;textRole:"name";displayText:currentIndex>=0?currentText:"Gespeicherte Aufnahme wählen";onActivated:{let item=pokit.savedCaptures[currentIndex];if(item)pokit.loadScopeCapture(item.path)} }
                                         RowLayout { Layout.fillWidth:true
-                                            Label { Layout.fillWidth:true;elide:Text.ElideRight;text:pokit.referenceName.length?"Vergleich: "+pokit.referenceName:"Keine Vergleichskurve";color:pokit.referenceName.length?"#15839a":"#5e676b" }
+                                            Label { Layout.fillWidth:true;elide:Text.ElideRight;text:pokit.referenceName.length?"Vergleich ["+(pokit.referenceUnit||"V")+"]: "+pokit.referenceName:"Keine Vergleichskurve";color:pokit.referenceName.length?"#15839a":"#5e676b" }
                                         }
                                         RowLayout { Layout.fillWidth:true
                                             Button { text:"EINBLENDEN";Layout.fillWidth:true;enabled:captureBox.currentIndex>=0;onClicked:{let item=pokit.savedCaptures[captureBox.currentIndex];if(item)pokit.loadScopeCapture(item.path)} }

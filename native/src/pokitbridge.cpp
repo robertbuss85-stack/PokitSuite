@@ -87,7 +87,9 @@ void PokitBridge::applySnapshot(const QVariantMap &values)
         || m_values.value(QStringLiteral("meterHistory2")) != values.value(QStringLiteral("meterHistory2"));
     const bool scopeChanged = m_values.value(QStringLiteral("scopeSamples")) != values.value(QStringLiteral("scopeSamples"))
         || m_values.value(QStringLiteral("scopeSamples2")) != values.value(QStringLiteral("scopeSamples2"));
-    const bool referenceChanged = m_values.value(QStringLiteral("referenceSamples")) != values.value(QStringLiteral("referenceSamples"));
+    bool referenceChanged = false;
+    for(const auto *key:{"referenceSamples","referenceUnit","referenceSampleRate","referenceTriggerSample","referenceHasTrigger","referenceName"})
+        referenceChanged = referenceChanged || m_values.value(QString::fromLatin1(key)) != values.value(QString::fromLatin1(key));
     for (auto it = values.cbegin(); it != values.cend(); ++it) {
         if (m_values.value(it.key()) == it.value()) continue;
         // Give Canvas an owned JavaScript array. A QVariantList property is a
@@ -150,6 +152,12 @@ void PokitBridge::setScopeTriggerPosition(double position)
 { post([position](auto *c) { c->setScopeTriggerPosition(position); }); }
 void PokitBridge::setScopeConfig(const QString &coupling, double voltsPerDiv, int timePerDivUs)
 { post([coupling, voltsPerDiv, timePerDivUs](auto *c) { c->setScopeConfig(coupling, voltsPerDiv, timePerDivUs); }); }
+void PokitBridge::setScopeChannelVisible(int channel, bool visible)
+{ post([channel,visible](auto *c) { c->setScopeChannelVisible(channel,visible); }); }
+void PokitBridge::setScopeChannelCurrent(int channel, bool current)
+{ post([channel,current](auto *c) { c->setScopeChannelCurrent(channel,current); }); }
+void PokitBridge::setScopeChannelScale(int channel, double voltsPerDiv, double offset)
+{ post([channel,voltsPerDiv,offset](auto *c) { c->setScopeChannelScale(channel,voltsPerDiv,offset); }); }
 void PokitBridge::setScopeRunning(bool running)
 { post([running](auto *c) { c->setScopeRunning(running); }); }
 void PokitBridge::loadScopeCapture(const QString &path)

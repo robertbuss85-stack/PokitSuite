@@ -14,6 +14,14 @@ CI performs a clean Windows native build and an offline MCP handshake/tool-schem
 
 The `meter-tools` native test checks HOLD/REL and statistics, unit resets, alarm transition logging, rejection of invalid limits and nonfinite values, CSV annotations/quoting, PDF export, a frozen historical window during new acquisition, and bounded plot snapshots after more than 100,000 samples. On Windows, run with the normal Windows Qt platform plugin so PDF tests can access installed fonts. UI smoke checks used two physical Pokit Pro devices in DC voltage mode, HOLD during continuing statistics, a visual low-limit alarm, both channels in a CSV recording with a comment, and PDF export. PDFs were rendered and visually inspected. Multi-day durability remains unvalidated.
 
+The `scope-channels` native test covers independent per-channel scale/offset and range requirements, voltage-cursor mapping, hide/show with preserved settings, all traces hidden, four channel slots and rejection of invalid channel indices and nonfinite inputs. For hardware verification, use different V/div values on CH1/CH2, hide/show each trace, switch the vertical-edit channel, and change time/div without overwriting either channel scale. Repeat with each radio master; verify `device_range` and the `scope_channels` telemetry. Visibility must not cancel paired acquisition.
+
+Live check (2026-11-27): CH1 at 2 V/div and CH2 at 10/20 mV/div returned distinct device ranges (2 and 0). Mouse actions hid CH1, selected CH2, changed CH2 V/div and moved its vertical position without altering CH1. Voltage cursors changed to the selected channel's scale and offset. Radio single captures succeeded with either master at 2 V/div versus 20 mV/div, and hiding CH2 during immediate radio RUN kept RUN active with a complete pair.
+
+The `scope-export` test covers two- and four-channel report layouts, a hidden channel, unequal sample counts/rates and voltage scales, trigger-relative CSV timing, CH2-only data, old single-channel capture files and rejection of missing data/timebases. Reports have one overview plus one page per channel. Generated PDF pages are rendered for visual checks; raw CSV counts must match every channel's complete waveform.
+
+Live export (2026-11-27): a radio-triggered pair from two Pokit Pro devices produced a three-page PDF and a CSV containing 400 rows (200 per channel). JSON retained both channels and the individual 10 mV/div / 2 V/div settings. PDF overview and CH2 detail pages were rendered and checked. Curves retain the chosen on-screen scales, including any resulting clipping.
+
 For the UI regression check, run `PokitSuiteNative.exe --ui-responsiveness-test` with no other instance open. It draws two 1,000-point jagged traces while the device worker is deliberately stalled for two seconds. Exit code 0 requires the UI heartbeat to stay below 250 ms. `--ui-monitor` logs a one-second UI heartbeat during live measurements.
 
 ## Hardware smoke test
@@ -30,6 +38,12 @@ Before a release candidate is considered hardware-tested:
 The first public release was interactively exercised with one Pokit Pro on Windows. Four-channel, Pokit Meter and cross-platform operation are not hardware-validated.
 
 ## Pokit Pro radio-trigger validation
+
+### Switch status regression coverage
+
+`switch-query` tests known/unknown switch safety, notification dispatch through the Dokit status parser, malformed/truncated switch bytes, retry backoff, notification/poll intervals, reconnect generations, stale timeouts and notification arrival during a pending read. Hardware diagnostics expose `switchReads`, `switchUpdates`, `switchNotifications`, `switchFailures`, `switchPending` and `switchAgeMs` per channel. Test physical switch changes separately; offline packet tests do not prove delivery by device firmware.
+
+2026-11-27 hardware smoke check: two Pokit Pro devices acknowledged status notification subscriptions and repeatedly returned the existing voltage/high-current switch positions without a status timeout during a run of over two minutes. The high-current device returned complete 100-sample current frames. DMM → DSO transitions also returned valid measurements. One initial device-initiated disconnect recovered automatically; a subsequent application restart connected both devices without that error. No physical switch toggle was performed during this check, so delivery latency of actual switch-change notifications remains unvalidated.
 
 ### Manual cursor checks
 

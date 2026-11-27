@@ -647,7 +647,7 @@ StatusService::Status StatusServicePrivate::parseStatus(const QByteArray &value)
     if (value.size() >= 6) { // Battery Status added to Pokit API docs v1.00.
         status.batteryStatus = static_cast<StatusService::BatteryStatus>(value.at(5));
     }
-    if (value.size() >= 7) { // Switch Position - as yet, undocumented by Pokit Innovations.
+    if (value.size() >= 7 && quint8(value.at(6)) <= quint8(StatusService::SwitchPosition::HighCurrent)) {
         status.switchPosition = static_cast<StatusService::SwitchPosition>(value.at(6));
     }
     if (value.size() >= 8) { // Charging Status - as yet, undocumented by Pokit Innovations.
@@ -740,7 +740,7 @@ void StatusServicePrivate::characteristicRead(const QLowEnergyCharacteristic &ch
     }
 
     if (characteristic.uuid() == StatusService::CharacteristicUuids::status) {
-        Q_EMIT q->deviceStatusRead(parseStatus(value));
+        processStatusUpdate(value);
         return;
     }
 
@@ -779,6 +779,24 @@ void StatusServicePrivate::characteristicRead(const QLowEnergyCharacteristic &ch
 
     qCWarning(lc).noquote() << tr("Unknown characteristic read for Status service")
         << serviceUuid << characteristic.name() << characteristic.uuid();
+}
+
+void StatusServicePrivate::processStatusUpdate(const QByteArray &value, bool notification)
+{
+    Q_Q(StatusService);
+    const auto status=parseStatus(value);
+    Q_EMIT q->deviceStatusRead(status);
+    Q_EMIT q->deviceStatusUpdate(status,notification);
+}
+
+void StatusServicePrivate::characteristicChanged(const QLowEnergyCharacteristic &characteristic,
+                                                const QByteArray &value)
+{
+    AbstractPokitServicePrivate::characteristicChanged(characteristic,value);
+    // Status notifications must reach the same parser/signal as explicit reads.
+    if(characteristic.uuid()==StatusService::CharacteristicUuids::status)
+        processStatusUpdate(value,true);
+    else characteristicRead(characteristic,value);
 }
 
 /*!

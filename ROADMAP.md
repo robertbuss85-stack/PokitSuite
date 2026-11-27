@@ -13,6 +13,7 @@ Statuses are evidence-based: **implemented** means present in source, **tested**
 - Local telemetry/command bridge and MCP measurement/configuration tools
 - Two-device DMM voltage readings and DSO acquisition
 - Native radio-triggered single captures with either Pokit Pro as master, matched frame numbers and shared trigger-axis rendering
+- Per-channel DSO voltage/current selection with switch checks; high-current-path DC/AC streaming and mixed voltage/current radio capture tested (reference accuracy and physical low-current validation pending)
 - Repeated radio-triggered acquisition pairs with RUN/STOP, 10 µs/div support and setting changes between complete pairs
 - Selectable saved reference curves with recorded timebase, including radio-trigger display
 

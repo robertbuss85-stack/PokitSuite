@@ -25,6 +25,8 @@ PokitSuite is a native Windows measurement application for Pokit Pro Bluetooth i
 | Signal metrics | Implemented, hardware-tested | Min, max, mean, RMS, Vpp, frequency, period, cycles and duty cycle |
 | Capture reports and comparison curves | Implemented, hardware-tested | PDF report, CSV value table, JSON waveform archive and selectable overlay |
 | Time and voltage cursors | Implemented, UI-tested | Drag two cursors per axis; read trigger-relative time, voltage, Δt, ΔU and 1/\|Δt\|; independent visibility and reset |
+| Channel visibility and vertical scales | Implemented, tested with two Pokit Pro devices | CH buttons hide/show traces; separate CH1/CH2 V/div, position and device ranges, including radio pairs. Voltage cursors use the selected channel. CH3/CH4 remain reserved. |
+| DSO current measurement | Implemented; high-current-path DC/AC acquisition tested | Per-channel voltage/current selection, A/mA/µA scales, switch checks and mixed-unit radio capture/export. Reference-current accuracy and physical low-current-path validation pending. [Guide](docs/SCOPE_CURRENT.md) |
 | MCP measurement tools | Implemented, protocol-tested | 17 tools over stdio; live values require a running native app |
 | Arduino edit/compile/upload loop | Experimental | Backup-aware edits and CLI integration; board/FQBN and physical target remain user-dependent |
 | Four-channel UI | Experimental | CH1 and CH2 are operational; CH3 and CH4 remain planned |

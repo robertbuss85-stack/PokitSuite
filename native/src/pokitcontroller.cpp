@@ -1,4 +1,5 @@
 #include "pokitcontroller.h"
+#include "scopeexport.h"
 
 #include <qtpokit/abstractpokitservice.h>
 #include <qtpokit/pokitdevice.h>
@@ -13,25 +14,28 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QFont>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocale>
 #include <QLowEnergyController>
-#include <QPageSize>
-#include <QPainter>
-#include <QPainterPath>
-#include <QPdfWriter>
-#include <QPen>
 #include <QSaveFile>
 #include <QRandomGenerator>
 #include <QSettings>
 #include <QStandardPaths>
-#include <QTextStream>
 #include <QUrl>
 #include <algorithm>
 #include <cmath>
+
+static QDir automationRoot()
+{
+    const QDir app(QCoreApplication::applicationDirPath());
+    for(const QString &path:{app.absolutePath(),app.absoluteFilePath(QStringLiteral("../..")),QDir::currentPath()}) {
+        QDir candidate(path);
+        if(candidate.exists(QStringLiteral("mcp/pokitsuite_mcp.py")))return candidate;
+    }
+    return app;
+}
 
 static QString deviceKey(const QBluetoothDeviceInfo &info)
 {
@@ -43,6 +47,8 @@ static QString deviceKey(const QBluetoothDeviceInfo &info)
 
 PokitController::PokitController(QObject *parent) : QObject(parent)
 {
+    m_switchClock.start();
+    qInfo()<<"PokitSuite telemetry directory:"<<automationRoot().absolutePath();
     connect(&m_meterTools, &MeterTools::changed, this, &PokitController::meterToolsChanged);
     m_savedDevices = QSettings(QStringLiteral("PokitSuite"), QStringLiteral("PokitSuite"))
                          .value(QStringLiteral("devices")).toMap();
@@ -150,7 +156,7 @@ PokitController::PokitController(QObject *parent) : QObject(parent)
                 auto &frame = m_rfFrames[channel];
                 if (!frame.metadata || frame.values.size() == frame.metadata->numberOfSamples) continue;
                 frame = {};
-                auto resend = m_rfSettings;
+                auto resend = channel == 0 ? m_rfSettings : m_rfSettings2;
                 resend.command = DsoService::Command::ResendData;
                 auto *service = channel == 0 ? m_dso : m_dso2;
                 const auto role = channel + 1 == m_scopeTriggerSource
@@ -202,10 +208,13 @@ PokitController::PokitController(QObject *parent) : QObject(parent)
     m_automationTimer.start();
     m_meterPoll.setInterval(1000);
     connect(&m_meterPoll, &QTimer::timeout, this, [this] {
-        if (m_feature != QStringLiteral("meter")) return;
         for (int channel = 0; channel < 2; ++channel) {
             if (!(channel ? m_connected2 : m_connected)) continue;
-            if (m_meterStatusReady[channel]) m_meterStatus[channel]->readStatusCharacteristic();
+            if (m_feature != QStringLiteral("meter")) {
+                if(!m_scopeRunning || !scopeChannelNotice(channel+1).isEmpty())refreshScopeSwitch(channel+1);
+                continue;
+            }
+            refreshScopeSwitch(channel+1);
             auto *meter = channel ? m_meter2 : m_meter;
             auto &watchdog = channel ? m_meterWatchdog2 : m_meterWatchdog;
             if (meter && (channel ? m_meterReady2 : m_meterReady)
@@ -362,6 +371,7 @@ void PokitController::attachDevice(const QBluetoothDeviceInfo &info)
         if (m_rfStage != RfStage::Idle) failRfCapture(QStringLiteral("Funktrigger: CH1 getrennt"));
         m_meterReady = false;
         m_meterStatusReady[0] = false;
+        m_meterSwitchPosition[0].reset();m_switchQuery[0].reset();
         m_meterValid = m_meterOverrange = false;
         emit meterValueChanged();
         m_dsoReady = false;
@@ -416,6 +426,7 @@ void PokitController::attachSecondDevice(const QBluetoothDeviceInfo &info)
         if (m_rfStage != RfStage::Idle) failRfCapture(QStringLiteral("Funktrigger: CH2 getrennt"));
         m_meterReady2 = false;
         m_meterStatusReady[1] = false;
+        m_meterSwitchPosition[1].reset();m_switchQuery[1].reset();
         m_meterValid2 = m_meterOverrange2 = false;
         emit meterValueChanged();
         m_dsoReady2 = false;
@@ -538,16 +549,62 @@ QString PokitController::meterSwitch2() const { return switchLabel(m_meterSwitch
 void PokitController::ensureMeterStatus(bool second)
 {
     auto *status = (second ? m_device2 : m_device)->status();
+    if (m_meterStatus[second] == status) return;
     m_meterStatus[second] = status;
     connect(status, &AbstractPokitService::serviceDetailsDiscovered, this, [this, second, status] {
         m_meterStatusReady[second] = true;
-        if (m_feature == QStringLiteral("meter")) status->readStatusCharacteristic();
+        auto &query=m_switchQuery[second];query.reset();
+        auto *service=status->service();
+        if(!service)return;
+        const auto characteristic=service->characteristic(StatusService::CharacteristicUuids::status);
+        const auto cccd=characteristic.descriptor(QBluetoothUuid::DescriptorType::ClientCharacteristicConfiguration);
+        query.canNotify=characteristic.properties().testFlag(QLowEnergyCharacteristic::Notify)&&cccd.isValid();
+        qInfo()<<"Switch CH"<<second+1<<"properties"<<int(characteristic.properties())<<"notifications supported"<<query.canNotify;
+        connect(service,&QLowEnergyService::descriptorWritten,this,[this,second,status,service,cccd](const QLowEnergyDescriptor &descriptor,const QByteArray &value){
+            if(status->service()!=service||descriptor!=cccd)return;
+            auto &q=m_switchQuery[second];q.subscribing=false;q.notifications=(value==QByteArray::fromHex("0100"));
+            if(q.notifications&&q.confirmedAt>=0)q.nextAttempt=m_switchClock.elapsed()+q.interval();
+            qInfo()<<"Switch CH"<<second+1<<"notification subscription"<<q.notifications;
+            emit scopeStateChanged();
+            QTimer::singleShot(50,this,[this,second]{refreshScopeSwitch(second+1);resumeAfterSwitch(second+1);});
+        });
+        const auto trace=[this,second](const QLowEnergyCharacteristic &c,const QByteArray &value,bool notification){
+            if(c.uuid()!=StatusService::CharacteristicUuids::status)return;
+            auto &q=m_switchQuery[second];if(notification)++q.updates;else ++q.reads;
+            qInfo()<<"Switch CH"<<second+1<<(notification?"notify":"read")<<value.toHex();
+        };
+        connect(service,&QLowEnergyService::characteristicRead,this,[trace](const QLowEnergyCharacteristic &c,const QByteArray &v){trace(c,v,false);});
+        connect(service,&QLowEnergyService::characteristicChanged,this,[trace](const QLowEnergyCharacteristic &c,const QByteArray &v){trace(c,v,true);});
+        QTimer::singleShot(1200,this,[this,second]{if(second?m_connected2:m_connected)refreshScopeSwitch(second+1);});
     });
-    connect(status, &StatusService::deviceStatusRead, this, [this, second](const StatusService::Status &reading) {
-        if (!(second ? m_connected2 : m_connected)
-            || reading.switchPosition == m_meterSwitchPosition[second]) return;
+    connect(status,&AbstractPokitService::serviceErrorOccurred,this,[this,second,status](QLowEnergyService::ServiceError error){
+        auto &q=m_switchQuery[second];
+        qWarning()<<"Switch CH"<<second+1<<"service error"<<int(error);
+        if(q.subscribing){q.subscribing=false;q.notifications=false;q.error=QStringLiteral("Status-Benachrichtigung nicht bestätigt; Leseabfrage wird verwendet");resumeAfterSwitch(second+1);}
+        else if(q.pending)failSwitchQuery(second+1,q.token,QStringLiteral("Bluetooth-Statusfehler %1").arg(int(error)));
+        if(!status->service()||status->service()->state()==QLowEnergyService::InvalidService){
+            m_meterStatusReady[second]=false;q.uncertain=true;
+            if(second?m_connected2:m_connected)(second?m_device2:m_device)->controller()->disconnectFromDevice();
+        }
+        emit scopeStateChanged();
+    });
+    connect(status, &StatusService::deviceStatusUpdate, this, [this, second](const StatusService::Status &reading,bool notification) {
+        if (!(second ? m_connected2 : m_connected) || !reading.switchPosition || quint8(*reading.switchPosition)>2) return;
+        auto &query=m_switchQuery[second];
+        if(!notification&&query.readSuperseded()) {
+            const bool waiting=query.pending;query.pending=false;
+            if(waiting)resumeAfterSwitch(second+1);
+            emit scopeStateChanged();return;
+        }
+        const bool waiting=query.confirm(m_switchClock.elapsed(),notification);
+        if(reading.switchPosition==m_meterSwitchPosition[second]) {
+            if(waiting)resumeAfterSwitch(second+1);
+            emit scopeStateChanged();publishAutomationState();return;
+        }
         m_meterSwitchPosition[second] = reading.switchPosition;
+        qInfo()<<"Switch CH"<<second+1<<"confirmed position"<<int(*reading.switchPosition);
         if (m_feature == QStringLiteral("meter")) configureMeter(second);
+        else scopeSwitchChanged(second ? 2 : 1);
         emit meterValueChanged();
     });
 }
@@ -555,6 +612,7 @@ void PokitController::ensureMeterStatus(bool second)
 void PokitController::ensureDso()
 {
     if (!m_device || m_dso) return;
+    ensureMeterStatus(false);
     m_dso = m_device->dso();
     connect(m_dso, &AbstractPokitService::serviceDetailsDiscovered, this, [this] {
         m_dsoReady = true;
@@ -579,7 +637,7 @@ void PokitController::ensureDso()
     connect(m_dso, &DsoService::metadataRead, this, [this](const DsoService::Metadata &meta) {
         if (m_feature != QStringLiteral("scope")) return;
         if (m_scopeTriggerSource) { onRfMetadata(1, meta); return; }
-        if (meta.samplingWindow != m_expectedScopeWindowUs ||
+        if (meta.mode != scopeSettings(1).mode || !scopeChannelNotice(1).isEmpty() || meta.samplingWindow != m_expectedScopeWindowUs ||
             meta.numberOfSamples != m_expectedScopeSamples) {
             return;
         }
@@ -602,6 +660,7 @@ void PokitController::ensureDso()
             // chunks across the full plot width distorts the time axis.
             m_scopePendingValues.resize(m_scopeMetadata.numberOfSamples);
             m_scopeValues = m_scopePendingValues;
+            m_scopeAccepting = false;
             m_rfNotificationsReady[0] = true;
             updateScopeMetrics();
             emit scopeSamplesChanged();
@@ -630,6 +689,7 @@ void PokitController::ensureDso()
 void PokitController::ensureDso2()
 {
     if (!m_device2 || m_dso2) return;
+    ensureMeterStatus(true);
     m_dso2 = m_device2->dso();
     connect(m_dso2, &AbstractPokitService::serviceDetailsDiscovered, this, [this] {
         m_dsoReady2 = true;
@@ -652,7 +712,7 @@ void PokitController::ensureDso2()
     connect(m_dso2, &DsoService::metadataRead, this, [this](const DsoService::Metadata &meta) {
         if (m_feature != QStringLiteral("scope")) return;
         if (m_scopeTriggerSource) { onRfMetadata(2, meta); return; }
-        if (meta.samplingWindow != m_expectedScopeWindowUs2 ||
+        if (meta.mode != scopeSettings(2).mode || !scopeChannelNotice(2).isEmpty() || meta.samplingWindow != m_expectedScopeWindowUs2 ||
             meta.numberOfSamples != m_expectedScopeSamples2) return;
         m_scopeAccepting2 = true;
         m_scopeMetadata2 = meta;
@@ -670,6 +730,7 @@ void PokitController::ensureDso2()
             m_scopePendingValues2.size() >= m_scopeMetadata2.numberOfSamples) {
             m_scopePendingValues2.resize(m_scopeMetadata2.numberOfSamples);
             m_scopeValues2 = m_scopePendingValues2;
+            m_scopeAccepting2 = false;
             m_rfNotificationsReady[1] = true;
             updateScopeMetrics2();
             emit scopeSamplesChanged();
@@ -774,8 +835,9 @@ void PokitController::refreshSavedCaptures()
         entry.insert(QStringLiteral("name"), object.value(QStringLiteral("display_name")).toString(info.baseName()));
         entry.insert(QStringLiteral("path"), info.filePath());
         entry.insert(QStringLiteral("pdfPath"), info.dir().filePath(info.completeBaseName() + QStringLiteral(".pdf")));
-        entry.insert(QStringLiteral("sampleCount"), object.value(QStringLiteral("waveform_v")).toArray().size());
-        entry.insert(QStringLiteral("vpp"), metrics.value(QStringLiteral("vpp_v")).toDouble());
+        entry.insert(QStringLiteral("sampleCount"), ScopeExport::waveform(object).size());
+        entry.insert(QStringLiteral("unit"), object.value(QStringLiteral("unit")).toString(QStringLiteral("V")));
+        entry.insert(QStringLiteral("vpp"), metrics.contains(QStringLiteral("vpp"))?metrics.value(QStringLiteral("vpp")).toDouble():metrics.value(QStringLiteral("vpp_v")).toDouble());
         entry.insert(QStringLiteral("frequency"), metrics.value(QStringLiteral("frequency_hz")).toDouble());
         captures.append(entry);
     }
@@ -785,114 +847,53 @@ void PokitController::refreshSavedCaptures()
 
 bool PokitController::writeCapturePdf(const QString &path, const QJsonObject &capture) const
 {
-    QPdfWriter writer(path);
-    writer.setPageSize(QPageSize(QPageSize::A4));
-    writer.setResolution(300);
-    writer.setTitle(QStringLiteral("PokitSuite Oscilloscope Capture"));
-    writer.setCreator(QStringLiteral("PokitSuite"));
-    QPainter painter(&writer);
-    if (!painter.isActive()) return false;
-
-    const int pageWidth = writer.width();
-    const int margin = 180;
-    const QRect content(margin, margin, pageWidth - margin * 2, writer.height() - margin * 2);
-    painter.fillRect(QRect(0, 0, writer.width(), writer.height()), QColor(QStringLiteral("#ffffff")));
-
-    QFont titleFont(QStringLiteral("Segoe UI"), 22, QFont::Bold);
-    QFont sectionFont(QStringLiteral("Segoe UI"), 12, QFont::Bold);
-    QFont bodyFont(QStringLiteral("Segoe UI"), 9);
-    painter.setFont(titleFont);
-    painter.setPen(QColor(QStringLiteral("#12212b")));
-    painter.drawText(QRect(content.left(), content.top(), content.width(), 120),
-                     Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("PokitSuite Oscilloscope Report"));
-    painter.setFont(bodyFont);
-    painter.setPen(QColor(QStringLiteral("#4d626e")));
-    painter.drawText(content.left(), content.top() + 135,
-                     QStringLiteral("Capture: %1").arg(capture.value(QStringLiteral("display_name")).toString()));
-    painter.drawText(content.left(), content.top() + 185,
-                     QStringLiteral("Device: %1").arg(capture.value(QStringLiteral("device")).toString()));
-
-    const QRect plot(content.left(), content.top() + 270, content.width(), 1180);
-    painter.fillRect(plot, QColor(QStringLiteral("#07100b")));
-    painter.setPen(QPen(QColor(QStringLiteral("#294a34")), 2));
-    for (int i = 0; i <= 10; ++i) {
-        const int x = plot.left() + i * plot.width() / 10;
-        painter.drawLine(x, plot.top(), x, plot.bottom());
-    }
-    for (int i = 0; i <= 8; ++i) {
-        const int y = plot.top() + i * plot.height() / 8;
-        painter.drawLine(plot.left(), y, plot.right(), y);
-    }
-    painter.setPen(QPen(QColor(QStringLiteral("#6b8171")), 3));
-    painter.drawLine(plot.center().x(), plot.top(), plot.center().x(), plot.bottom());
-    painter.drawLine(plot.left(), plot.center().y(), plot.right(), plot.center().y());
-
-    const QJsonArray waveform = capture.value(QStringLiteral("waveform_v")).toArray();
-    const QJsonObject settings = capture.value(QStringLiteral("settings")).toObject();
-    const double voltsPerDiv = qMax(0.001, settings.value(QStringLiteral("volts_per_div")).toDouble(1.0));
-    if (waveform.size() > 1) {
-        QPainterPath pathShape;
-        for (int index = 0; index < waveform.size(); ++index) {
-            const double x = plot.left() + double(index) * plot.width() / double(waveform.size() - 1);
-            const double y = plot.center().y() - waveform.at(index).toDouble() / voltsPerDiv * plot.height() / 8.0;
-            if (index == 0) pathShape.moveTo(x, y); else pathShape.lineTo(x, y);
-        }
-        painter.save();
-        painter.setClipRect(plot.adjusted(2, 2, -2, -2));
-        painter.setRenderHint(QPainter::Antialiasing);
-        painter.setPen(QPen(QColor(QStringLiteral("#ffd629")), 6));
-        painter.drawPath(pathShape);
-        painter.restore();
-    }
-    painter.setFont(sectionFont);
-    painter.setPen(QColor(QStringLiteral("#12212b")));
-    painter.drawText(content.left(), plot.bottom() + 100, QStringLiteral("Measured and derived values"));
-
-    const QJsonObject metrics = capture.value(QStringLiteral("metrics")).toObject();
-    struct ReportRow { QString label; QString value; };
-    const QList<ReportRow> rows{
-        {QStringLiteral("Minimum"), QString::number(metrics.value(QStringLiteral("minimum_v")).toDouble(), 'f', 6) + QStringLiteral(" V")},
-        {QStringLiteral("Maximum"), QString::number(metrics.value(QStringLiteral("maximum_v")).toDouble(), 'f', 6) + QStringLiteral(" V")},
-        {QStringLiteral("Peak-to-peak"), QString::number(metrics.value(QStringLiteral("vpp_v")).toDouble(), 'f', 6) + QStringLiteral(" V")},
-        {QStringLiteral("Mean"), QString::number(metrics.value(QStringLiteral("mean_v")).toDouble(), 'f', 6) + QStringLiteral(" V")},
-        {QStringLiteral("RMS"), QString::number(metrics.value(QStringLiteral("rms_v")).toDouble(), 'f', 6) + QStringLiteral(" V")},
-        {QStringLiteral("Frequency"), QString::number(metrics.value(QStringLiteral("frequency_hz")).toDouble(), 'f', 3) + QStringLiteral(" Hz")},
-        {QStringLiteral("Period"), QString::number(metrics.value(QStringLiteral("period_s")).toDouble(), 'g', 7) + QStringLiteral(" s")},
-        {QStringLiteral("Cycles"), QString::number(metrics.value(QStringLiteral("cycles")).toDouble(), 'f', 0)},
-        {QStringLiteral("Duty cycle"), QString::number(metrics.value(QStringLiteral("duty_cycle_percent")).toDouble(), 'f', 2) + QStringLiteral(" %")},
-        {QStringLiteral("Sample rate"), QString::number(settings.value(QStringLiteral("sample_rate_hz")).toDouble(), 'f', 0) + QStringLiteral(" S/s")},
-        {QStringLiteral("Sample count"), QString::number(waveform.size())},
-        {QStringLiteral("Time / div"), QString::number(settings.value(QStringLiteral("time_per_div_us")).toInt()) + QStringLiteral(" us")},
-        {QStringLiteral("Voltage / div"), QString::number(voltsPerDiv, 'g', 6) + QStringLiteral(" V")},
-        {QStringLiteral("Coupling"), settings.value(QStringLiteral("coupling")).toString()},
-        {QStringLiteral("Trigger"), settings.value(QStringLiteral("trigger_mode")).toString() + QStringLiteral(" at ") +
-            QString::number(settings.value(QStringLiteral("trigger_level_v")).toDouble(), 'f', 3) + QStringLiteral(" V")}
-    };
-    const int tableTop = plot.bottom() + 150;
-    const int rowHeight = 88;
-    const int labelWidth = content.width() * 46 / 100;
-    painter.setFont(bodyFont);
-    for (int index = 0; index < rows.size(); ++index) {
-        const QRect row(content.left(), tableTop + index * rowHeight, content.width(), rowHeight);
-        painter.fillRect(row, index % 2 ? QColor(QStringLiteral("#eef3f5")) : QColor(QStringLiteral("#f8fafb")));
-        painter.setPen(QColor(QStringLiteral("#c6d0d5")));
-        painter.drawRect(row);
-        painter.drawLine(row.left() + labelWidth, row.top(), row.left() + labelWidth, row.bottom());
-        painter.setPen(QColor(QStringLiteral("#263942")));
-        painter.drawText(row.adjusted(22, 0, -22, 0), Qt::AlignLeft | Qt::AlignVCenter, rows[index].label);
-        painter.drawText(row.adjusted(labelWidth + 22, 0, -22, 0), Qt::AlignLeft | Qt::AlignVCenter, rows[index].value);
-    }
-    painter.setPen(QColor(QStringLiteral("#70838d")));
-    painter.drawText(QRect(content.left(), content.bottom() - 80, content.width(), 60),
-                     Qt::AlignRight | Qt::AlignVCenter,
-                     QStringLiteral("PokitSuite - generated %1").arg(QDateTime::currentDateTime().toString(Qt::ISODate)));
-    painter.end();
-    return QFileInfo(path).exists() && QFileInfo(path).size() > 0;
+    return ScopeExport::writePdf(path, capture);
 }
 
 QString PokitController::saveScopeCapture()
 {
-    if (m_scopeValues.size() < 2) {
+    QJsonArray channels;
+    for (int index = 0; index < 2; ++index) {
+        const auto &values = index ? m_scopeValues2 : m_scopeValues;
+        const auto &metadata = index ? m_scopeMetadata2 : m_scopeMetadata;
+        if (values.size() < 2 || !metadata.samplingRate) continue;
+        const auto &config = m_scopeChannels.at(index + 1);
+        QJsonObject metrics{
+            {QStringLiteral("minimum_v"), index ? m_scopeMinimum2 : m_scopeMinimum},
+            {QStringLiteral("maximum_v"), index ? m_scopeMaximum2 : m_scopeMaximum},
+            {QStringLiteral("vpp_v"), index ? m_scopeVpp2 : m_scopeVpp},
+            {QStringLiteral("mean_v"), index ? m_scopeMean2 : m_scopeMean},
+            {QStringLiteral("rms_v"), index ? m_scopeRms2 : m_scopeRms},
+            {QStringLiteral("frequency_hz"), index ? m_scopeFrequency2 : m_scopeFrequency},
+            {QStringLiteral("period_s"), index ? m_scopePeriod2 : m_scopePeriod},
+            {QStringLiteral("cycles"), index ? m_scopeCycles2 : m_scopeCycles},
+            {QStringLiteral("duty_cycle_percent"), index ? m_scopeDutyCycle2 : m_scopeDutyCycle}
+        };
+        QJsonObject settings{
+            {QStringLiteral("sample_rate_hz"), double(metadata.samplingRate)},
+            {QStringLiteral("sampling_window_us"), double(metadata.samplingWindow)},
+            {QStringLiteral("time_per_div_us"), m_scopeTimePerDivUs},
+            {QStringLiteral("volts_per_div"), config.voltsPerDiv},
+            {QStringLiteral("vertical_position_v"), config.offset},
+            {QStringLiteral("coupling"), metadata.mode==DsoService::Mode::AcCurrent||metadata.mode==DsoService::Mode::AcVoltage?QStringLiteral("AC"):QStringLiteral("DC")},
+            {QStringLiteral("trigger_mode"), m_triggerMode},
+            {QStringLiteral("trigger_level_v"), m_scopeRfPair?(index?m_rfSettings2.triggerLevel:m_rfSettings.triggerLevel):scopeSettings(index+1).triggerLevel},
+            {QStringLiteral("trigger_sample"), m_scopeRfPair ? QJsonValue(metadata.triggerSample.value_or(0)) : QJsonValue()}
+        };
+        QJsonArray waveform;
+        for (double value : values) waveform.append(value);
+        channels.append(ScopeExport::normalize(QJsonObject{
+            {QStringLiteral("channel"), index + 1},
+            {QStringLiteral("device"), index ? m_deviceName2 : m_deviceName},
+            {QStringLiteral("device_id"), index ? m_deviceId2 : m_deviceId},
+            {QStringLiteral("color"), index ? deviceColor2() : deviceColor()},
+            {QStringLiteral("visible"), config.visible},
+            {QStringLiteral("connected"), index ? m_connected2 : m_connected},
+            {QStringLiteral("metrics"), metrics}, {QStringLiteral("settings"), settings},
+            {QStringLiteral("waveform_v"), waveform}
+        },config.current));
+    }
+    if (channels.isEmpty()) {
         setStatus(QStringLiteral("Keine vollständige Scope-Aufnahme zum Speichern vorhanden"));
         return {};
     }
@@ -903,34 +904,18 @@ QString PokitController::saveScopeCapture()
     }
     const QDateTime now = QDateTime::currentDateTime();
     const QString base = QStringLiteral("PokitScope_%1").arg(now.toString(QStringLiteral("yyyyMMdd_HHmmss_zzz")));
-    const QString displayName = now.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-    QJsonObject metrics{
-        {QStringLiteral("minimum_v"), m_scopeMinimum}, {QStringLiteral("maximum_v"), m_scopeMaximum},
-        {QStringLiteral("vpp_v"), m_scopeVpp}, {QStringLiteral("mean_v"), m_scopeMean},
-        {QStringLiteral("rms_v"), m_scopeRms}, {QStringLiteral("frequency_hz"), m_scopeFrequency},
-        {QStringLiteral("period_s"), m_scopePeriod}, {QStringLiteral("cycles"), m_scopeCycles},
-        {QStringLiteral("duty_cycle_percent"), m_scopeDutyCycle}
-    };
-    QJsonObject settings{
-        {QStringLiteral("sample_rate_hz"), double(m_scopeMetadata.samplingRate)},
-        {QStringLiteral("sampling_window_us"), double(m_scopeMetadata.samplingWindow)},
-        {QStringLiteral("time_per_div_us"), m_scopeTimePerDivUs},
-        {QStringLiteral("volts_per_div"), m_scopeVoltsPerDiv},
-        {QStringLiteral("coupling"), m_scopeCoupling},
-        {QStringLiteral("trigger_mode"), m_triggerMode},
-        {QStringLiteral("trigger_level_v"), m_triggerLevel},
-        {QStringLiteral("trigger_sample"), m_scopeRfPair
-            ? QJsonValue(scopeRfTriggerSample()) : QJsonValue()}
-    };
-    QJsonArray waveform;
-    for (double value : m_scopeValues) waveform.append(value);
-    QJsonObject capture{
-        {QStringLiteral("schema"), QStringLiteral("pokitsuite.scope-capture.v1")},
-        {QStringLiteral("display_name"), displayName},
-        {QStringLiteral("timestamp_utc"), now.toUTC().toString(Qt::ISODateWithMs)},
-        {QStringLiteral("device"), m_deviceName}, {QStringLiteral("metrics"), metrics},
-        {QStringLiteral("settings"), settings}, {QStringLiteral("waveform_v"), waveform}
-    };
+    // Keep legacy top-level fields for existing reference-curve readers.
+    QJsonObject capture = channels.first().toObject();
+    capture.insert(QStringLiteral("schema"), QStringLiteral("pokitsuite.scope-capture.v1"));
+    capture.insert(QStringLiteral("display_name"), now.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+    capture.insert(QStringLiteral("timestamp_utc"), now.toUTC().toString(Qt::ISODateWithMs));
+    capture.insert(QStringLiteral("channels"), channels);
+    capture.insert(QStringLiteral("radio_paired"), m_scopeRfPair);
+    capture.insert(QStringLiteral("trigger_source"), m_scopeTriggerSource);
+    capture.insert(QStringLiteral("trigger_unit"), m_scopeChannels.at(m_scopeTriggerSource==2?2:1).unit());
+    capture.insert(QStringLiteral("trigger_source_level"), m_scopeTriggerSource==2?m_rfSettings2.triggerLevel:m_rfSettings.triggerLevel);
+    capture.insert(QStringLiteral("trigger_fraction"), m_scopeRfPair ? scopeRfTriggerFraction() : 0.0);
+    capture.insert(QStringLiteral("view_window_us"), m_scopeRfPair ? int(m_rfSettings.samplingWindow) : m_scopeTimePerDivUs * 10);
     const QString jsonPath = directory.filePath(base + QStringLiteral(".json"));
     QSaveFile jsonFile(jsonPath);
     if (!jsonFile.open(QIODevice::WriteOnly) ||
@@ -938,16 +923,10 @@ QString PokitController::saveScopeCapture()
         setStatus(QStringLiteral("Messdatei konnte nicht gespeichert werden"));
         return {};
     }
-    const QString csvPath = directory.filePath(base + QStringLiteral(".csv"));
-    QSaveFile csvFile(csvPath);
-    if (csvFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QTextStream stream(&csvFile);
-        stream << "sample_index,time_s,voltage_v\n";
-        const double sampleRate = m_scopeMetadata.samplingRate;
-        for (int index = 0; index < m_scopeValues.size(); ++index)
-            stream << index << ',' << QString::number(sampleRate > 0 ? index / sampleRate : 0.0, 'g', 12)
-                   << ',' << QString::number(m_scopeValues[index], 'g', 12) << '\n';
-        csvFile.commit();
+    if (!ScopeExport::writeCsv(directory.filePath(base + QStringLiteral(".csv")), capture)) {
+        setStatus(QStringLiteral("Messdatei gespeichert, CSV-Erstellung fehlgeschlagen"));
+        refreshSavedCaptures();
+        return {};
     }
     const QString pdfPath = directory.filePath(base + QStringLiteral(".pdf"));
     if (!writeCapturePdf(pdfPath, capture)) {
@@ -956,7 +935,7 @@ QString PokitController::saveScopeCapture()
         return {};
     }
     refreshSavedCaptures();
-    setStatus(QStringLiteral("Scope-Aufnahme als PDF und Wertetabelle gespeichert"));
+    setStatus(QStringLiteral("Scope-Bericht mit %1 Kanälen als PDF und Wertetabelle gespeichert").arg(channels.size()));
     return pdfPath;
 }
 
@@ -977,7 +956,7 @@ void PokitController::loadScopeCapture(const QString &jsonPath)
         return;
     }
     const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
-    const QJsonArray waveform = object.value(QStringLiteral("waveform_v")).toArray();
+    const QJsonArray waveform = ScopeExport::waveform(object);
     QVector<double> values; values.reserve(waveform.size());
     for (const QJsonValue &value : waveform) {
         if (!value.isDouble() || !std::isfinite(value.toDouble())) {
@@ -1003,6 +982,7 @@ void PokitController::loadScopeCapture(const QString &jsonPath)
         && trigger.toDouble() <= values.size();
     m_referenceTriggerSample = m_referenceHasTrigger ? trigger.toInt() : 0;
     m_referenceSampleRate = rate;
+    m_referenceUnit = object.value(QStringLiteral("unit")).toString(QStringLiteral("V"));
     m_referenceValues = values;
     m_referenceName = object.value(QStringLiteral("display_name")).toString(info.baseName());
     emit referenceChanged();
@@ -1028,7 +1008,7 @@ void PokitController::openCaptureFolder()
 
 void PokitController::publishAutomationState()
 {
-    const QDir root(QDir::current());
+    const QDir root=automationRoot();
     root.mkpath(QStringLiteral("data"));
     QJsonObject metrics{
         {QStringLiteral("minimum_v"), m_scopeMinimum},
@@ -1059,7 +1039,7 @@ void PokitController::publishAutomationState()
         {QStringLiteral("sampling_window_us"), double(m_scopeMetadata.samplingWindow)},
         {QStringLiteral("samples"), m_scopeValues.size()},
         {QStringLiteral("time_per_div_us"), m_scopeTimePerDivUs},
-        {QStringLiteral("volts_per_div"), m_scopeVoltsPerDiv},
+        {QStringLiteral("volts_per_div"), scopeVoltsPerDiv()},
         {QStringLiteral("coupling"), m_scopeCoupling},
         {QStringLiteral("trigger_mode"), m_triggerMode},
         {QStringLiteral("trigger_level_v"), m_triggerLevel},
@@ -1075,14 +1055,19 @@ void PokitController::publishAutomationState()
         {QStringLiteral("sampling_window_us"), double(m_scopeMetadata2.samplingWindow)},
         {QStringLiteral("samples"), m_scopeValues2.size()},
         {QStringLiteral("time_per_div_us"), m_scopeTimePerDivUs},
-        {QStringLiteral("volts_per_div"), m_scopeVoltsPerDiv},
+        {QStringLiteral("volts_per_div"), m_scopeChannels.at(2).voltsPerDiv},
         {QStringLiteral("coupling"), m_scopeCoupling},
         {QStringLiteral("trigger_mode"), m_triggerMode},
         {QStringLiteral("trigger_level_v"), m_triggerLevel},
         {QStringLiteral("metrics"), metrics2},
         {QStringLiteral("waveform_v"), waveform2}
     };
+    scope.insert(QStringLiteral("trigger_level_v"),scopeSettings(1).triggerLevel);
+    scope2.insert(QStringLiteral("trigger_level_v"),scopeSettings(2).triggerLevel);
+    scope = ScopeExport::normalize(scope,m_scopeChannels.at(1).current);
+    scope2 = ScopeExport::normalize(scope2,m_scopeChannels.at(2).current);
     QJsonObject state{
+        {QStringLiteral("scope_channels"), QJsonArray::fromVariantList(scopeChannels())},
         {QStringLiteral("schema"), QStringLiteral("pokitsuite.telemetry.v1")},
         {QStringLiteral("timestamp_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
         {QStringLiteral("connected"), m_connected},
@@ -1092,6 +1077,7 @@ void PokitController::publishAutomationState()
         {QStringLiteral("connected_device_count"), (m_connected ? 1 : 0) + (m_connected2 ? 1 : 0)},
         {QStringLiteral("status"), m_status},
         {QStringLiteral("active_feature"), m_feature},
+        {QStringLiteral("scope_running"),m_scopeRunning},
         {QStringLiteral("multimeter"), QJsonObject{
             {QStringLiteral("value"), m_meterValue}, {QStringLiteral("unit"), m_meterUnit},
             {QStringLiteral("valid"), m_connected && m_meterValid},
@@ -1127,7 +1113,7 @@ void PokitController::publishAutomationState()
 
 void PokitController::processAutomationCommands()
 {
-    const QDir root(QDir::current());
+    const QDir root=automationRoot();
     const QString commandPath = root.filePath(QStringLiteral("data/pokit_command.json"));
     QFile file(commandPath);
     if (!file.exists() || !file.open(QIODevice::ReadOnly)) return;
@@ -1144,13 +1130,23 @@ void PokitController::processAutomationCommands()
     else if (action == QStringLiteral("scope_single")) scopeSingle();
     else if (action == QStringLiteral("scope_trigger_source"))
         setScopeTriggerSource(command.value(QStringLiteral("channel")).toInt(-1));
+    else if (action == QStringLiteral("scope_channel")) {
+        const int channel = command.value(QStringLiteral("channel")).toInt();
+        if (channel >= 1 && channel <= 4) {
+            if(command.contains(QStringLiteral("current")))setScopeChannelCurrent(channel,command.value(QStringLiteral("current")).toBool());
+            const auto previous = m_scopeChannels.at(channel);
+            if (command.contains(QStringLiteral("visible"))) setScopeChannelVisible(channel,command.value(QStringLiteral("visible")).toBool());
+            setScopeChannelScale(channel,command.value(QStringLiteral("volts_per_div")).toDouble(previous.voltsPerDiv),
+                command.value(QStringLiteral("offset_v")).toDouble(previous.offset));
+        }
+    }
     else if (action == QStringLiteral("save_scope_capture")) saveScopeCapture();
     else if (action == QStringLiteral("load_scope_reference"))
         loadScopeCapture(command.value(QStringLiteral("json_path")).toString());
     else if (action == QStringLiteral("clear_scope_reference")) clearScopeReference();
     else if (action == QStringLiteral("scope_config")) {
         setScopeConfig(command.value(QStringLiteral("coupling")).toString(QStringLiteral("DC")),
-                       command.value(QStringLiteral("volts_per_div")).toDouble(m_scopeVoltsPerDiv),
+                       command.value(QStringLiteral("volts_per_div")).toDouble(scopeVoltsPerDiv()),
                        command.value(QStringLiteral("time_per_div_us")).toInt(m_scopeTimePerDivUs));
         setScopeTrigger(command.value(QStringLiteral("trigger_mode")).toString(m_triggerMode),
                         command.value(QStringLiteral("trigger_level_v")).toDouble(m_triggerLevel));
@@ -1324,14 +1320,15 @@ void PokitController::setScopeTrigger(const QString &mode, double level)
 
 void PokitController::setScopeConfig(const QString &coupling, double voltsPerDiv, int timePerDivUs)
 {
-    if (m_scopeCoupling == coupling && m_scopeVoltsPerDiv == voltsPerDiv
+    if (m_scopeCoupling == coupling && scopeVoltsPerDiv() == voltsPerDiv
         && m_scopeTimePerDivUs == timePerDivUs) return;
     if (m_scopeTriggerSource && m_scopeRunning && !m_rfContinuous) {
         m_rfRestart.stop();
         stopRfCapture();
     }
     m_scopeCoupling = coupling;
-    m_scopeVoltsPerDiv = qBound(0.01, voltsPerDiv, 100.0);
+    if (std::isfinite(voltsPerDiv) && voltsPerDiv > 0)
+        m_scopeChannels.setScale(1, voltsPerDiv, m_scopeChannels.at(1).offset);
     m_scopeTimePerDivUs = qBound(10, timePerDivUs, 1000000);
     emit scopeStateChanged();
     m_scopeRestartTimer.stop();
@@ -1342,6 +1339,104 @@ void PokitController::setScopeConfig(const QString &coupling, double voltsPerDiv
         }
         else { startScope(); startScope2(); }
     }
+}
+
+QVariantList PokitController::scopeChannels() const
+{
+    auto result=m_scopeChannels.values();
+    for(int i=0;i<2;++i){
+        auto c=result[i].toMap();const auto &q=m_switchQuery[i];
+        c.insert("notice",scopeChannelNotice(i+1));
+        c.insert("maxScale",m_scopeChannels.at(i+1).current?(m_meterSwitchPosition[i]==StatusService::SwitchPosition::HighCurrent?2.5:.075):100.0);
+        c.insert("switch",i?meterSwitch2():meterSwitch());
+        c.insert("device_id",i?m_deviceId2:m_deviceId);c.insert("color",i?deviceColor2():deviceColor());
+        c.insert("switchPending",q.pending||q.subscribing);c.insert("switchFailures",q.failures);
+        c.insert("switchNotifications",q.notifications);c.insert("switchReads",q.reads);c.insert("switchUpdates",q.updates);
+        c.insert("switchAgeMs",q.confirmedAt<0?-1:m_switchClock.elapsed()-q.confirmedAt);
+        c.insert("switchWarning",q.failures&&!q.uncertain?QStringLiteral("Status wird erneut geprüft; letzter bestätigter Schalterstand wird verwendet"):q.error);
+        result[i]=c;
+    }
+    return result;
+}
+
+QString PokitController::scopeChannelNotice(int channel) const
+{
+    if(channel<1||channel>2)return {};
+    const auto position=m_meterSwitchPosition[channel-1];
+    if(m_scopeChannels.at(channel).current){
+        if(m_switchQuery[channel-1].uncertain)return QStringLiteral("CH%1: Schalterabfrage fehlgeschlagen; warte auf Bestätigung").arg(channel);
+        if(!position)return QStringLiteral("CH%1: Schalterstellung für Strommessung wird abgefragt").arg(channel);
+        if(position==StatusService::SwitchPosition::Voltage)return QStringLiteral("CH%1: Für Strommessung den Pokit-Schalter auf mA oder A stellen").arg(channel);
+        if(ScopeChannels::currentRange(m_scopeChannels.at(channel).peak(),position==StatusService::SwitchPosition::HighCurrent)<0)
+            return QStringLiteral("CH%1: Stromskala verkleinern oder passenden A-Schalterbereich wählen").arg(channel);
+    }else if(position&&position!=StatusService::SwitchPosition::Voltage)
+        return QStringLiteral("CH%1: Schalter auf Spannung stellen oder Messgröße Strom wählen").arg(channel);
+    return {};
+}
+
+void PokitController::clearScopeChannel(int channel)
+{
+    if(channel==1){m_scopeValues.clear();m_scopePendingValues.clear();m_scopeAccepting=false;
+        m_scopeMinimum=m_scopeMaximum=m_scopeVpp=m_scopeMean=m_scopeRms=m_scopeFrequency=m_scopePeriod=m_scopeCycles=m_scopeDutyCycle=0;
+    }else{m_scopeValues2.clear();m_scopePendingValues2.clear();m_scopeAccepting2=false;
+        m_scopeMinimum2=m_scopeMaximum2=m_scopeVpp2=m_scopeMean2=m_scopeRms2=m_scopeFrequency2=m_scopePeriod2=m_scopeCycles2=m_scopeDutyCycle2=0;
+    }
+    emit scopeSamplesChanged();emit scopeMetricsChanged();
+}
+
+void PokitController::scopeSwitchChanged(int channel)
+{
+    const bool running=m_scopeRunning;
+    if(m_scopeTriggerSource&&m_rfStage!=RfStage::Idle){stopRfCapture();clearRfPair();}
+    clearScopeChannel(channel);
+    if(m_scopeChannels.at(channel).current&&m_meterSwitchPosition[channel-1]!=StatusService::SwitchPosition::HighCurrent&&m_scopeChannels.at(channel).peak()>.3)
+        m_scopeChannels.setScale(channel,.05,0);
+    if(channel==1){m_scopeRestartTimer.stop();m_scopeWatchdog.stop();}else{m_scopeRestartTimer2.stop();m_scopeWatchdog2.stop();}
+    m_scopeRunning=running;emit scopeStateChanged();
+    if(running&&m_feature==QStringLiteral("scope")){
+        if(m_scopeTriggerSource){if(m_rfStage==RfStage::Idle)m_rfRestart.start();}
+        else QTimer::singleShot(30,this,[this,channel]{if(m_scopeRunning&&m_feature==QStringLiteral("scope")){if(channel==1)startScope();else startScope2();}});
+    }
+    publishAutomationState();
+}
+
+void PokitController::setScopeChannelCurrent(int channel,bool current)
+{
+    if(channel<1||channel>2||!m_scopeChannels.setCurrent(channel,current))return;
+    if(current)m_scopeChannels.setScale(channel,m_meterSwitchPosition[channel-1]==StatusService::SwitchPosition::HighCurrent?2.0:.05,0);
+    if(channel==(m_scopeTriggerSource==2?2:1))m_triggerLevel=0;
+    if(m_scopeTriggerSource)clearRfPair();
+    scopeSwitchChanged(channel);
+}
+
+void PokitController::setScopeChannelVisible(int channel, bool visible)
+{
+    // Visibility is a display choice: radio pairing and trigger acquisition continue.
+    if (!m_scopeChannels.setVisible(channel, visible)) return;
+    emit scopeStateChanged();
+    publishAutomationState();
+}
+
+void PokitController::setScopeChannelScale(int channel, double voltsPerDiv, double offset)
+{
+    if (channel < 1 || channel > 4) return;
+    if (channel<=2 && m_scopeChannels.at(channel).current && voltsPerDiv*4>(m_meterSwitchPosition[channel-1]==StatusService::SwitchPosition::HighCurrent?10.0:.3)) {
+        setStatus(QStringLiteral("Stromskala zu groß für die Schalterstellung; passenden A-Bereich wählen"));return;
+    }
+    const double previousScale = m_scopeChannels.at(channel).voltsPerDiv;
+    if (!m_scopeChannels.setScale(channel, voltsPerDiv, offset)) return;
+    emit scopeStateChanged();
+    // Offset only moves the displayed zero. A changed scale also selects the
+    // device range. Freeze radio settings until the current pair completes.
+    if (previousScale != m_scopeChannels.at(channel).voltsPerDiv && channel <= 2
+        && m_feature == QStringLiteral("scope") && m_scopeRunning) {
+        if (m_scopeTriggerSource) {
+            if (!m_rfContinuous) {m_rfRestart.stop();stopRfCapture();}
+            if (m_rfStage == RfStage::Idle) m_rfRestart.start();
+        } else if (channel == 1) {m_scopeRestartTimer.stop();startScope();}
+        else {m_scopeRestartTimer2.stop();startScope2();}
+    }
+    publishAutomationState();
 }
 
 void PokitController::setScopeRunning(bool running)
@@ -1396,12 +1491,13 @@ void PokitController::scopeSingle()
     startScope(); startScope2();
 }
 
-DsoService::Settings PokitController::scopeSettings() const
+DsoService::Settings PokitController::scopeSettings(int channel) const
 {
     DsoService::Command command = DsoService::Command::FreeRunning;
     if (m_triggerMode == QStringLiteral("rising")) command = DsoService::Command::RisingEdgeTrigger;
     else if (m_triggerMode == QStringLiteral("falling")) command = DsoService::Command::FallingEdgeTrigger;
-    const double requiredPeak = m_scopeVoltsPerDiv * 4.0;
+    const auto &config=m_scopeChannels.at(channel);
+    const double requiredPeak = config.peak();
     quint8 range = +PokitPro::VoltageRange::_600V;
     if (requiredPeak <= 0.25) range = +PokitPro::VoltageRange::_250mV;
     else if (requiredPeak <= 2.0) range = +PokitPro::VoltageRange::_2V;
@@ -1410,8 +1506,10 @@ DsoService::Settings PokitController::scopeSettings() const
     else if (requiredPeak <= 60.0) range = +PokitPro::VoltageRange::_60V;
     else if (requiredPeak <= 125.0) range = +PokitPro::VoltageRange::_125V;
     else if (requiredPeak <= 400.0) range = +PokitPro::VoltageRange::_400V;
-    const auto mode = m_scopeCoupling == QStringLiteral("AC")
-        ? DsoService::Mode::AcVoltage : DsoService::Mode::DcVoltage;
+    const auto mode = config.current
+        ? (m_scopeCoupling == QStringLiteral("AC") ? DsoService::Mode::AcCurrent : DsoService::Mode::DcCurrent)
+        : (m_scopeCoupling == QStringLiteral("AC") ? DsoService::Mode::AcVoltage : DsoService::Mode::DcVoltage);
+    if(config.current)range=quint8(ScopeChannels::currentRange(requiredPeak,m_meterSwitchPosition[channel-1]==StatusService::SwitchPosition::HighCurrent));
     const float safeTrigger = float(qBound(-requiredPeak, m_triggerLevel, requiredPeak));
     const quint32 windowUs = quint32(m_scopeTimePerDivUs * 10);
     // Pokit Pro tops out at 1 MS/s. Reduce record length for the fastest
@@ -1420,9 +1518,60 @@ DsoService::Settings PokitController::scopeSettings() const
     return {command, safeTrigger, mode, range, windowUs, samples};
 }
 
+void PokitController::resumeAfterSwitch(int channel)
+{
+    QTimer::singleShot(50,this,[this,channel]{
+        if(m_feature!=QStringLiteral("scope")||!m_scopeRunning)return;
+        if(m_scopeTriggerSource){if(m_rfStage==RfStage::Idle)startRfCapture();}
+        else if(channel==1)startScope();else startScope2();
+    });
+}
+
+void PokitController::failSwitchQuery(int channel,quint64 request,const QString &reason)
+{
+    const int i=channel-1;auto &q=m_switchQuery[i];
+    if(!q.fail(request,m_switchClock.elapsed(),m_meterSwitchPosition[i].has_value(),reason))return;
+    qWarning()<<"Switch CH"<<channel<<reason<<"failures"<<q.failures<<"notifications"<<q.notifications;
+    emit scopeStateChanged();publishAutomationState();
+    if(q.uncertain&&m_scopeChannels.at(channel).current)setStatus(scopeChannelNotice(channel));
+    if(q.failures==3){
+        setStatus(QStringLiteral("CH%1: Statusdienst wird durch Neuverbinden wiederhergestellt").arg(channel));
+        if(i?m_connected2:m_connected)(i?m_device2:m_device)->controller()->disconnectFromDevice();
+    }else resumeAfterSwitch(channel);
+}
+
+bool PokitController::refreshScopeSwitch(int channel)
+{
+    const int i=channel-1;auto &q=m_switchQuery[i];
+    if(q.pending||q.subscribing)return true;
+    if(!m_meterStatusReady[i]||!(i?m_connected2:m_connected))return false;
+    auto *status=m_meterStatus[i];
+    if(q.canNotify&&!q.subscriptionAttempted){
+        q.subscriptionAttempted=true;q.subscribing=true;const auto request=++q.token;
+        if(!status->enableStatusNotifications()){q.subscribing=false;q.notifications=false;}
+        else{
+            QTimer::singleShot(4500,this,[this,i,channel,request]{auto &query=m_switchQuery[i];
+                if(!query.subscribing||query.token!=request)return;
+                query.subscribing=false;query.notifications=false;
+                query.error=QStringLiteral("Status-Benachrichtigung nicht bestätigt; Leseabfrage wird verwendet");
+                resumeAfterSwitch(channel);emit scopeStateChanged();
+            });return true;
+        }
+    }
+    if(!q.begin(m_switchClock.elapsed()))return false;
+    const auto request=q.token;
+    if(!status->readStatusCharacteristic()){
+        failSwitchQuery(channel,request,QStringLiteral("Status-Leseauftrag konnte nicht gestartet werden"));return true;
+    }
+    QTimer::singleShot(4500,this,[this,channel,request]{failSwitchQuery(channel,request,QStringLiteral("Keine Statusantwort innerhalb von 4,5 s"));});
+    return true;
+}
+
 void PokitController::startScope()
 {
     if (!m_connected || !m_dsoReady || !m_scopeRunning || m_scopeTriggerSource) return;
+    if(refreshScopeSwitch(1))return;
+    if(!scopeChannelNotice(1).isEmpty()){m_scopeWatchdog.stop();setStatus(scopeChannelNotice(1));return;}
     const auto settings = scopeSettings();
     m_expectedScopeWindowUs = settings.samplingWindow;
     m_expectedScopeSamples = settings.numberOfSamples;
@@ -1437,7 +1586,9 @@ void PokitController::startScope()
 void PokitController::startScope2()
 {
     if (!m_connected2 || !m_dsoReady2 || !m_scopeRunning || m_scopeTriggerSource) return;
-    const auto settings = scopeSettings();
+    if(refreshScopeSwitch(2))return;
+    if(!scopeChannelNotice(2).isEmpty()){m_scopeWatchdog2.stop();setStatus(scopeChannelNotice(2));return;}
+    const auto settings = scopeSettings(2);
     m_expectedScopeWindowUs2 = settings.samplingWindow;
     m_expectedScopeSamples2 = settings.numberOfSamples;
     m_scopeAccepting2 = false;
@@ -1469,6 +1620,7 @@ bool PokitController::scopeRfReady() const
 void PokitController::setScopeTriggerSource(int channel)
 {
     if (channel < 0 || channel > 2 || channel == m_scopeTriggerSource) return;
+    if(m_scopeChannels.at(m_scopeTriggerSource==2?2:1).current!=m_scopeChannels.at(channel==2?2:1).current)m_triggerLevel=0;
     stopRfCapture();
     m_rfContinuous = false;
     m_rfRestart.stop();
@@ -1512,6 +1664,12 @@ void PokitController::clearRfPair()
 void PokitController::startRfCapture()
 {
     if (m_rfStage != RfStage::Idle || m_feature != QStringLiteral("scope")) return;
+    // Remember SINGLE/RUN intent while an asynchronous switch read completes.
+    m_scopeRunning=true;emit scopeStateChanged();
+    if(refreshScopeSwitch(1)||refreshScopeSwitch(2))return;
+    for(int channel=1;channel<=2;++channel)if(!scopeChannelNotice(channel).isEmpty()){
+        m_scopeRunning=true;emit scopeStateChanged();setStatus(scopeChannelNotice(channel));return;
+    }
     if (!scopeRfReady()) {
         m_rfContinuous = false;
         m_scopeRunning = false;
@@ -1524,6 +1682,7 @@ void PokitController::startRfCapture()
     m_dso->setPokitProduct(PokitProduct::PokitPro);
     m_dso2->setPokitProduct(PokitProduct::PokitPro);
     m_rfSettings = settings;
+    m_rfSettings2 = scopeSettings(2);
     // A fresh radio group filters late data and acknowledgements from prior shots.
     m_rfGroup = m_rfGroup ? quint8(m_rfGroup % 127 + 1)
                           : quint8(QRandomGenerator::global()->bounded(1, 128));
@@ -1538,7 +1697,7 @@ void PokitController::startRfCapture()
     setStatus(QStringLiteral("Funktrigger: Empfänger wird scharfgestellt"));
     m_rfTimeout.start(15000);
     auto *follower = m_scopeTriggerSource == 1 ? m_dso2 : m_dso;
-    if (!follower->setSynchronizedSettings(m_rfSettings, m_scopeRfTriggerSample,
+    if (!follower->setSynchronizedSettings(m_scopeTriggerSource == 1 ? m_rfSettings2 : m_rfSettings, m_scopeRfTriggerSample,
                                            DsoService::SyncRole::Follower, m_rfGroup)) {
         failRfCapture(QStringLiteral("Funktrigger: Empfänger konnte nicht scharfgestellt werden"));
     }
@@ -1553,7 +1712,7 @@ void PokitController::onRfSettingsWritten(int channel, DsoService::SyncRole role
     setStatus(QStringLiteral("Funktrigger: warte auf CH%1 und das Aufnahmepaar").arg(m_scopeTriggerSource));
     m_rfTimeout.start(15000 + int(m_rfSettings.samplingWindow / 1000));
     auto *master = m_scopeTriggerSource == 1 ? m_dso : m_dso2;
-    if (!master->setSynchronizedSettings(m_rfSettings, m_scopeRfTriggerSample,
+    if (!master->setSynchronizedSettings(m_scopeTriggerSource == 1 ? m_rfSettings : m_rfSettings2, m_scopeRfTriggerSample,
                                          DsoService::SyncRole::Master, m_rfGroup)) {
         failRfCapture(QStringLiteral("Funktrigger: Quelle konnte nicht scharfgestellt werden"));
     }
@@ -1568,7 +1727,7 @@ void PokitController::onRfMetadata(int channel, const DsoService::Metadata &meta
                 << "role" << int(metadata.syncRole.value_or(DsoService::SyncRole::Independent));
     }
     if (m_rfStage != RfStage::WaitingForFrames || metadata.status != DsoService::DsoStatus::Done
-        || metadata.mode != m_rfSettings.mode || metadata.samplingWindow != m_rfSettings.samplingWindow
+        || metadata.mode != (channel==1?m_rfSettings:m_rfSettings2).mode || metadata.samplingWindow != m_rfSettings.samplingWindow
         || metadata.numberOfSamples != m_rfSettings.numberOfSamples
         || !metadata.samplingRate || !std::isfinite(metadata.scale)) return;
     const auto expectedRole = channel == m_scopeTriggerSource
